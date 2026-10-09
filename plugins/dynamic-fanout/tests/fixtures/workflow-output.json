@@ -1,0 +1,64 @@
+{
+  "summary": "dynamic-fanout fixture run",
+  "agentCount": 9,
+  "logs": [],
+  "result": {
+    "started": true,
+    "card": { "kind": "review", "depth": "standard", "S": "opus", "W": "opus", "refEffort": "xhigh", "refSource": "default" },
+    "digest": {
+      "counts": { "units": 6, "ok": 3, "okRerouted": 1, "okPromoted": 1, "brief": 0, "unverified": 1, "claims": 9,
+                  "confirmed": 3, "plausible": 2, "refuted": 2, "unverifiedClaims": 2 },
+      "exceptions": [],
+      "top": [
+        { "cid": "c1", "unit": "u1", "severity": "high", "title": "exact", "verdict": "CONFIRMED", "file": "src/billing.py", "line": 8 },
+        { "cid": "c4", "unit": "u3", "severity": "high", "title": "drifted line", "verdict": "CONFIRMED", "file": "src/billing.py", "line": 3 }
+      ],
+      "money": { "U": 10, "P": 4, "R": 0.8, "C": 5, "parityBound": false, "committedUsd": 4.2, "rerouteUsd": 0.5, "outputTokens": 40000 },
+      "warnings": [], "dropped": [], "invariants": []
+    },
+    "ledger": {
+      "units": [
+        { "id": "u1", "role": "review", "vec": "D2 A1 T1 C1 V1 B1 G0", "parity": false, "p": "opus·medium", "fb": "opus·high", "ctx": "omit", "check": "quote", "why": "fixture", "override": null, "outcome": "ok", "reason": null, "verifyBump": 0, "attempts": [{ "n": 1, "tag": "⟦df:u1:1⟧", "cell": "opus·medium", "kind": "primary", "mode": null, "cls": "ok", "estUsd": 0.1 }] },
+        { "id": "u2", "role": "review", "vec": "D2 A1 T1 C1 V1 B1 G0", "parity": false, "p": "opus·medium", "fb": "opus·high", "ctx": "omit", "check": "quote", "why": "fixture", "override": null, "outcome": "ok", "reason": null, "verifyBump": 0, "attempts": [{ "n": 1, "tag": "⟦df:u2:1⟧", "cell": "opus·medium", "kind": "primary", "mode": null, "cls": "ok", "estUsd": 0.1 }] },
+        { "id": "u3", "role": "review", "vec": "D2 A1 T1 C1 V1 B1 G0", "parity": false, "p": "opus·medium", "fb": "opus·high", "ctx": "omit", "check": "quote", "why": "fixture", "override": null, "outcome": "ok-rerouted", "reason": null, "verifyBump": 1, "attempts": [{ "n": 1, "tag": "⟦df:u3:1⟧", "cell": "opus·medium", "kind": "primary", "mode": null, "cls": "capability", "estUsd": 0.1 }, { "n": 2, "tag": "⟦df:u3:2⟧", "cell": "opus·high", "kind": "reroute", "mode": "repair", "cls": "ok", "estUsd": 0.2 }] },
+        { "id": "u4", "role": "review", "vec": "D2 A1 T1 C1 V1 B1 G0", "parity": false, "p": "opus·medium", "fb": "opus·high", "ctx": "omit", "check": "quote", "why": "fixture", "override": null, "outcome": "ok-promoted", "reason": null, "verifyBump": 0, "attempts": [{ "n": 1, "tag": "⟦df:u4:1⟧", "cell": "opus·high", "kind": "promoted", "mode": null, "cls": "ok", "estUsd": 0.2 }] },
+        { "id": "u5", "role": "extract", "vec": "D0 A0 T1 C0 V2 B0 G0", "parity": false, "p": "sonnet·low", "fb": "sonnet·medium", "ctx": "omit", "check": "set", "why": "fixture", "override": null, "outcome": "unverified", "reason": "exhausted (fb null): no fb for this role", "verifyBump": 0, "attempts": [{ "n": 1, "tag": "⟦df:u5:1⟧", "cell": "sonnet·low", "kind": "primary", "mode": null, "cls": "capability", "estUsd": 0.05 }] },
+        { "id": "u6", "role": "review", "vec": "D2 A1 T1 C1 V1 B1 G0", "parity": false, "p": "opus·medium", "fb": "opus·high", "ctx": "omit", "check": "quote", "why": "fixture", "override": null, "outcome": "ok", "reason": null, "verifyBump": 0, "attempts": [{ "n": 1, "tag": "⟦df:u6:1⟧", "cell": "opus·medium", "kind": "primary", "mode": null, "cls": "ok", "estUsd": 0.1 }] },
+        { "id": "u7", "role": "review", "vec": "D2 A1 T1 C1 V1 B1 G0", "parity": false, "p": "opus·medium", "fb": "opus·high", "ctx": "omit", "check": "quote", "why": "fixture: refused by the meter, never launched", "override": null, "outcome": "unverified", "reason": "budget: work pool exhausted", "verifyBump": 0, "attempts": [{ "n": 1, "tag": "⟦df:u7:1⟧", "cell": "opus·medium", "kind": "primary", "mode": null, "cls": "refused", "estUsd": 0 }] }
+      ],
+      "verifiers": [], "inspectors": [], "sweeps": [], "cells": { "opus·medium": 4, "opus·high": 2, "sonnet·low": 1 }, "reroutes": 1, "promotions": ["review|opus·medium"]
+    },
+    "results": {
+      "units": {
+        "u1": { "status": "complete", "confidence": 0.9 },
+        "u2": { "status": "complete", "confidence": 0.8 },
+        "u3": { "status": "complete", "confidence": 0.6 },
+        "u4": { "status": "complete", "confidence": 0.9 },
+        "u5": { "status": "partial", "confidence": 0.3 },
+        "u6": { "status": "complete", "confidence": 0.4 }
+      },
+      "claims": [
+        { "cid": "c1", "unit": "u1", "severity": "high", "title": "exact quote on the cited line", "verdict": "CONFIRMED",
+          "evidence": [{ "file": "src/billing.py", "line": 8, "quote": "tax = round(gross_cents * tax_rate / (1 + tax_rate))" }] },
+        { "cid": "c2", "unit": "u1", "severity": "medium", "title": "quote 3 lines from the cited line", "verdict": "CONFIRMED",
+          "evidence": [{ "file": "src/billing.py", "line": 6, "quote": "return gross_cents - tax" }] },
+        { "cid": "c3", "unit": "u6", "severity": "medium", "title": "whitespace differs", "verdict": "PLAUSIBLE",
+          "evidence": [{ "file": "src/billing.py", "line": 13, "quote": "if payment.amount_cents == invoice.open_cents:" }] },
+        { "cid": "c4", "unit": "u3", "severity": "high", "title": "quote exists, but far from the cited line", "verdict": "CONFIRMED",
+          "evidence": [{ "file": "src/billing.py", "line": 3, "quote": "invoice.due_date < today" }] },
+        { "cid": "c5", "unit": "u2", "severity": "high", "title": "refuted with a grounded counter-quote", "verdict": "REFUTED",
+          "evidence": [{ "file": "src/billing.py", "line": 3, "quote": "GRACE_MINUTES = 30" }],
+          "counter_quote": { "file": "src/billing.py", "line": 14, "quote": "invoice.status = \"paid\"" } },
+        { "cid": "c6", "unit": "u6", "severity": "medium", "title": "refuted with an invented counter-quote", "verdict": "REFUTED",
+          "evidence": [{ "file": "src/billing.py", "line": 9, "quote": "return gross_cents - tax" }],
+          "counter_quote": { "file": "src/billing.py", "line": 9, "quote": "return gross_cents + tax" } },
+        { "cid": "c7", "unit": "u5", "severity": "low", "title": "already unverified, bad quote", "verdict": "UNVERIFIED", "reason": "exhausted",
+          "evidence": [{ "file": "src/billing.py", "line": 2, "quote": "this text is not in the file" }] },
+        { "cid": "c8", "unit": "u6", "severity": "low", "title": "cites a missing file", "verdict": "PLAUSIBLE",
+          "evidence": [{ "file": "src/nope.py", "line": 1, "quote": "anything" }] },
+        { "cid": "c9", "unit": "u5", "severity": "low", "title": "unverified with good evidence stays unverified", "verdict": "UNVERIFIED", "reason": "topK",
+          "evidence": [{ "file": "src/billing.py", "line": 3, "quote": "GRACE_MINUTES = 30" }] }
+      ]
+    }
+  }
+}

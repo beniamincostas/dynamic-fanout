@@ -1,0 +1,24 @@
+{
+  "name": "dynamic-fanout",
+  "description": "dynamic-fanout: a lean, master-routed multi-agent fan-out for Claude Code (model \u00d7 effort per subagent, hard cost ceiling, one pre-chosen fallback per unit).",
+  "owner": {
+    "name": "Beniamin Costas"
+  },
+  "plugins": [
+    {
+      "name": "dynamic-fanout",
+      "source": "./plugins/dynamic-fanout",
+      "description": "Master-routed model\u00d7effort agent fan-out, the lean replacement for ultracode's fan-out: cheaper on every task, with quality held by a parity cell, objective checks and one pre-planned fallback.",
+      "category": "developer-tools",
+      "tags": [
+        "multi-agent",
+        "fan-out",
+        "workflow",
+        "model-routing",
+        "cost-control"
+      ],
+      "homepage": "https://github.com/beniamincostas/dynamic-fanout",
+      "repository": "https://github.com/beniamincostas/dynamic-fanout"
+    }
+  ]
+}

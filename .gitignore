@@ -1,0 +1,5 @@
+# macOS
+.DS_Store
+# local runtime data (routing stats live outside the repo by default)
+routing-stats.json
+node_modules/

@@ -1,0 +1,22 @@
+{
+  "name": "dynamic-fanout",
+  "displayName": "Dynamic Fanout",
+  "version": "0.1.0",
+  "description": "Master-routed model\u00d7effort agent fan-out, the lean replacement for ultracode's fan-out: cheaper on every task, with quality held by a parity cell, objective checks and one pre-planned fallback.",
+  "author": {
+    "name": "Beniamin Costas"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/beniamincostas/dynamic-fanout",
+  "repository": "https://github.com/beniamincostas/dynamic-fanout",
+  "keywords": [
+    "fan-out",
+    "multi-agent",
+    "workflow",
+    "model-routing",
+    "effort",
+    "cost",
+    "orchestration",
+    "ultracode"
+  ]
+}
