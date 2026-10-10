@@ -65,19 +65,23 @@ Declare in `verify`:
 
 ```js
 verify: {
-  rungs: { blocker: 'V3', high: 'V3', medium: 'V2', low: 'V0', info: 'V0' },
+  rungs: { blocker: 'V3', high: 'V3', medium: 'V1', low: 'V0', info: 'V0' },
   cells: { V3: { effort: 'high' } },     // W·high; model omitted = S on an Opus session
   topK: 8, batch: 3,
-  expected: 2                             // ≈ ceil(claims that carry the answer / batch)
+  expected: 2                             // ≈ ceil(nUnits·highsPerUnit / batch) — the
+                                           //   claims that carry the answer
 }
 ```
 
 - Severity in research = how much the claim carries the answer: `high` for the claims the
   answer rests on, `medium` for supporting context, `low`/`info` for background.
 - V1 (inspector quote check) runs for every claim with a quote; it is the main defence
-  against confident fabrication, which is the dominant research failure.
+  against confident fabrication, which is the dominant research failure. It is also the
+  **default rung for medium**, so a supporting-context claim is grounded but not
+  skeptic-checked unless you raise it (`rungs.medium: 'V2'`, or a `V2` token in `check`).
 - Cross-file or causal claims ("X is set here and read there") go to V3; single-site
-  lookups stay at V1.
+  lookups stay at V1. Mark them `high`, not `medium`, if they carry the answer — a `high`
+  severity is what exempts a claim from `topK` and reserves it a skeptic by default.
 - Sweep: `standard` → `rounds: 1` on the cheapest W cell, asking "what did the sweep miss
   that the question needs?". `quick` → 0. `deep` → 2 plus the completeness critic.
 

@@ -81,22 +81,27 @@ it never overrides the rails in `workflow.md`.
 
 ```js
 verify: {
-  rungs: { blocker: 'V3', high: 'V3', medium: 'V2', low: 'V0', info: 'V0' },
+  rungs: { blocker: 'V3', high: 'V3', medium: 'V1', low: 'V0', info: 'V0' },
   cells: { V3: { effort: 'high' } },     // W·high; parity claims run S·high automatically
   topK: 12, batch: 3,
-  expected: 4                             // ≈ ceil(expected blocker+high findings / batch)
+  expected: 4                             // ≈ ceil(nUnits·highsPerUnit / batch); mediums
+                                           //   add nothing at the V1 default (see below)
 }
 ```
 
 - V1 first: the inspector grounds every quote; tests or a grep count replace a skeptic
-  whenever they decide the claim.
-- Rungs come from `verify.rungs` by severity (blocker/high default V3, medium V2), not from
-  depth on their own. `quick`: lower the rungs you want cheap (e.g. `rungs.medium: 'V0'`).
-  `standard`: the defaults above. `deep`: give the units whose findings drive the
-  recommendation a `V4` token in `check` — `check` can name `V2`/`V3`/`V4` to floor that
-  unit's claims there regardless of severity (claim rung = `max(verify.rungs[severity] +
-  bump, floor)`, parity always ≥V3, capped at V4); or rely on the +1 bumps (ok-rerouted,
-  confidence <0.5, which stack).
+  whenever they decide the claim. **`medium` defaults to V1** — a grounded quote, no
+  skeptic — because a typical review produces far more mediums than the verification
+  budget can afford to put a skeptic on (measured: ~4/unit). Raise specific mediums to V2
+  (a `V2` token in that unit's `check`) or the whole severity (`rungs.medium: 'V2'`) when
+  those findings matter enough to spend one.
+- Rungs come from `verify.rungs` by severity (blocker/high default V3, medium V1), not from
+  depth on their own. `quick`: nothing to lower further at the default. `standard`: the
+  defaults above. `deep`: give the units whose findings drive the recommendation a `V4`
+  token in `check` — `check` can name `V2`/`V3`/`V4` to floor that unit's claims there
+  regardless of severity (claim rung = `max(verify.rungs[severity] + bump, floor)`, parity
+  always ≥V3, capped at V4); or rely on the +1 bumps (ok-rerouted, confidence <0.5, which
+  stack).
 - REFUTED needs a `counter_quote`; without one it stays PLAUSIBLE.
 - Claims past `topK` are UNVERIFIED `topK` and listed in `digest.dropped`; report them, do not drop them.
 - Sweep: default cell is W·medium (clamped to E_ref); `standard` → `rounds: 1`, `deep` → 2

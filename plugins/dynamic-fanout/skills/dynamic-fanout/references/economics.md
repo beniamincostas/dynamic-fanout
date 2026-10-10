@@ -43,7 +43,7 @@ turns  = min(cap, round((turnsBase + in/tokPerTurn) × effortTurns[effort]))
 prefix = (lean ? baseCtxLean : baseCtx) + ctxTok          // ctxTok only when CLAUDE.md is kept
 estUsd = [ (prefix + g·in)        × inPrice × cacheWrite   // everything written to cache once
          + turns × (prefix + g·in/2) × inPrice × cacheRead  // each turn re-reads the context so far
-         + turns × outPerTurn[effort] × outPrice ] / 1e6 × scale
+         + turns × outPerTurn[effort] × outPrice ] / 1e6 × scaleByRole[role] × scale
 ```
 
 | Constant | Value | Meaning |
@@ -53,20 +53,24 @@ estUsd = [ (prefix + g·in)        × inPrice × cacheWrite   // everything writ
 | `turnsBase`, `tokPerTurn` | 10, 2500 | turns ≈ 10 + in/2.5k at high effort |
 | `effortTurns` | low 0.6 · medium 0.8 · high 1 · xhigh 1.3 · max 1.6 (haiku 0.6) | effort multiplies turns |
 | `outPerTurn` | low 600 · medium 1000 · high 1500 · xhigh 1800 · max 2200; haiku 500 | output tokens per turn |
-| `readFactor` (g) | 3 | crew context grows to prefix + 3·in (targeted reads, some re-reads) |
+| `readFactor` (g) | 4 | crew context grows to prefix + 4·in — raised from 3 in 0.1.2: even turn-capped agents with a targeted-reading prompt measured ~4–5× the planned reading |
 | `caps` | worker 30 · workerMcp 35 · workerCtx 30 · implementer 60 · skeptic 12 · inspector 6 | = each agent file's `maxTurns`; the price uses the same cap |
 | `inspectorIn` | 12000 | tokens an inspector call reads |
 | `verifierInFrac` | 0.5 | a verifier (and the critic) is priced at this share of `ultra.inAvg` |
 | `ultraReadFactor`, `ultraTurnCap` | 4, 80 | how U's agents are priced (below) |
-| `scale` | 1 | self-calibration multiplier on every estimate |
+| `scaleByRole` | `{work: 1.3, verify: 0.3, inspect: 0.7}` | per-role self-calibration multiplier (see "Per-role calibration" below) |
+| `scale` | 1 | global self-calibration multiplier, applied on top of `scaleByRole`; neutral since 0.1.2 superseded the single-scale path |
 
 - `in` = tokens the agent is planned to read; `ctxTok` = CLAUDE.md tokens on its path
   (0 for `ctx:'omit'`).
 - The agent type comes from the card (`typeKey`): `implement` role → implementer;
-  `ctx:'keep'` → worker-ctx; vector T2 → worker-mcp; else worker.
+  `ctx:'keep'` → worker-ctx; vector T2 → worker-mcp; else worker. Its **role** —
+  `work` (implementer/worker/workerMcp/workerCtx), `verify` (skeptic) or `inspect`
+  (inspector) — is fixed per type (`ROLE_OF`) and selects which `scaleByRole` entry
+  applies; `estUsd`'s `o.role` carries it through.
 - **U is priced the way ultracode actually behaves:** S·E_ref, full prefix + `ctxTok`,
-  `readFactor` 4, turn cap 80 (no real cap). The crew ceiling 0.5·U therefore compares
-  bounded crew agents with unbounded ultracode agents, like with like.
+  `readFactor` 4, turn cap 80 (no real cap), role `work`. The crew ceiling 0.5·U
+  therefore compares bounded crew agents with unbounded ultracode agents, like with like.
 
 Why this shape: an agent's cost is its context re-read on every turn, so **turns ×
 context dominate; agent count and CLAUDE.md come next; the model comes last**. Capping
@@ -110,6 +114,34 @@ $20.62 that 0.1.0 had estimated. Those cards were routed the 0.1.0 way (subsyste
 "high" on deployed code); following the new routing rules (`routing.md` §3 and §5) lowers
 P further.
 
+## What 0.1.1 got wrong (per-role; measured on a validation run)
+
+A validation run under 0.1.1 (a review, 8 units, 69 findings: 7 high / 34 medium) priced
+the crew at $15.29 and actually spent **$19.89** ($21.59 with the master's own share),
+0/25 agents over their turn cap — bounded agents fixed the blowout, but not the price.
+The miss was **per role, in opposite directions**:
+
+| Role | Estimate | Actual | Ratio |
+|---|---|---|---|
+| workers | $10.42 | $17.29 | 1.66 (at `readFactor` 3) |
+| skeptics | $3.31 | $1.31 | 0.40 |
+| inspectors | $1.77 | $1.28 | 0.72 |
+
+A separate verify-only pass of the 4 highs that should have been checked cost **$0.63
+against a $3.31 estimate** (0.19) and confirmed all 4. Only 6 of the 69 findings got
+verified in the main run, because `verify.expected` was a flat `ceil(n/2)` = 4 batches at
+`topK: 8`, while the 1.3× work overrun drained the shared ceiling before verification
+ran — `topK`, not risk, decided what got checked.
+
+A single global `calib.scale` (the blend, ≈1.28) would have priced skeptics **~4× too
+expensive**, starving verification further to correct an overrun it had no part in.
+0.1.2's fix has three parts, in order of how much of the gap each closes:
+1. **`scaleByRole`** prices each role by its own measured ratio instead of one blend.
+2. **`readFactor` 3 → 4** closes most of the worker gap on its own (workers still ran
+   1.66× over at 3; `scaleByRole.work: 1.3` absorbs what is left).
+3. **Risk-weighted `expected`** (below) sizes the verification reserve to the findings a
+   run actually expects, so `topK` stops substituting for severity.
+
 ## Budget block: U, P, R, C
 
 | | How it is formed | Who |
@@ -121,6 +153,26 @@ P further.
 
 Verifier, sweep and critic agents run `ctx:'omit'` on the lean prefix. `rerouteRate`
 defaults to 0.1, or the observed rate from routing stats once a role cohort has n≥4.
+
+### Verification sizing: `expected` (0.1.2, risk-weighted)
+
+When the master leaves `verify.expected` unset, the foreman sizes the reserve to the
+findings a run actually expects, not a flat fraction of unit count:
+
+```
+highs   = ceil(nUnits × highsPerUnit / batch)              // every expected high is checked
+medRung = verify.rungs.medium ?? DEFAULT_RUNGS.medium        // 'V1' by default (0.1.2)
+mediums = medRung ∈ {V2,V3,V4} ? ceil(min(nUnits × mediumsPerUnit, topK) / batch) : 0
+expected = highs + mediums
+```
+
+`highsPerUnit: 0.9` and `mediumsPerUnit: 4` are measured on the validation review (7 high
++ 34 medium from 8 units). Highs are exempt from `topK` outright (`topKExempt` also now
+exempts any V3+-rung claim with severity ≥ high, not only parity), so `highs` reserves
+real capacity for all of them; `mediums` is 0 at the `V1` default — a medium only draws a
+skeptic once the master (or a unit's own `check`) raises its rung to `V2` or above, and
+even then the reserve is capped at `topK` mediums. This is what keeps `topK` a size
+limit again instead of the thing deciding which findings get checked at all.
 
 ### The verification reserve
 
@@ -188,22 +240,46 @@ Do the task yourself, with no fan-out, when **any** of these hold:
 The routing-stats *Envelope* rule (last run of this kind above 0.6·U actual) multiplies
 these thresholds by 1.5 for that kind, and the card notes it.
 
-## Self-calibration (`calib.scale`)
+## Self-calibration: per-role (`calib.scaleByRole`, supersedes `calib.scale`)
 
-`scale` multiplies every estimate. The plugin learns it from its own runs:
-1. At close, `ledger-cost.mjs <transcript-dir> --json` writes the actual dollars, and
-   `stats.mjs update … --ledger <that file>` takes actual ÷ estimated (the run's
-   `committedUsd + rerouteUsd`), clamps it to [0.3, 5] so one odd run cannot swing it,
-   and folds it into `stats.calib.scale` as an exponentially weighted average (α 0.5; the
-   first observation sets it outright).
-2. `stats.mjs --summary <kind>` prints `CALIB {"scale":X.XX}` whenever a scale exists;
-   the master passes that object as `args.calib` on the next run.
+0.1.1 learned one `calib.scale` for every agent. 0.1.2 learns one **per role** —
+`work` (worker/worker-mcp/worker-ctx/implementer), `verify` (skeptic), `inspect`
+(inspector) — because the validation run's miss ran in opposite directions by role (see
+"What 0.1.1 got wrong" above): a single blended `scale` would have overcorrected
+verification to compensate for a work overrun it had no part in.
 
-`scale` moves U, P, R and C together, so it does not change whether a plan fits the
-ceiling. It corrects the absolute dollars: the card, the `pauseUsd` stop, the ledger's
-committed-vs-actual line and a user `--ceiling`. If actuals drift far from estimates
-because agents read more than planned, fix the briefs and packing first; `scale` absorbs
-what remains.
+1. At close, `ledger-cost.mjs <transcript-dir> --json` writes the actual dollars **by
+   kind** (`byKind`, a real ledger-cost.mjs output, not the old bare `{totals:{usd}}`
+   shape). `stats.mjs update … --ledger <that file>` then runs the comparison per role:
+   - **estimate** (`estimatedUsdByRole`), straight from this run's own ledger: `work` =
+     every unit attempt + every sweep round; `verify` = every verifier batch; `inspect` =
+     every inspector call;
+   - **actual** (`actualUsdByRole`): `work` sums `byKind.work` + `byKind.sweep` +
+     `byKind.critic` (whichever are present); `verify` = `byKind.verifier`; `inspect` =
+     `byKind.inspector`. A role whose kind(s) never appear is skipped (`null`), not
+     treated as a true zero.
+   - `ratio = actual / estimate`, clamped to **[0.1, 10]** (wider than the old [0.3, 5]:
+     a role ratio can legitimately be far from 1, as skeptics' 0.40/0.19 showed);
+   - `used` = the `scaleByRole[role]` this run was **actually priced with**
+     (`result.card.calib.scaleByRole[role]`, the factors `buildCard` now records on every
+     card; 1 if the card carried none) — so `target = used × ratio` is what the factor
+     *should* have been, not the raw ratio on top of whatever the default happens to be;
+   - `stats.calib.scaleByRole[role]` folds in `target` as an EWMA (α 0.5; outright on
+     that role's first observation).
+   - **Migration:** the first per-role write parks the old `calib.scale` at
+     `calib.legacyScale` (once) and resets `calib.scale` to 1, its neutral value. A
+     `--ledger` file with no `byKind` (an old-style ledger-cost output) still drives the
+     old single-`scale` path, untouched.
+2. `stats.mjs --summary <kind>` prints `CALIB {"scaleByRole":{"work":1.3,...}}` whenever
+   any role has a learned value (plus a `"scale"` key only when the global scale differs
+   from 1); the master passes that object as `args.calib` on the next run. With no
+   per-role data yet it falls back to the old `CALIB {"scale":X.XX}` line.
+
+`scaleByRole` and `scale` both move every role's estimates proportionally, so neither
+changes whether a plan fits the ceiling — they correct the absolute dollars: the card,
+the `pauseUsd` stop, the ledger's committed-vs-actual line and a user `--ceiling`. If
+actuals drift far from estimates because agents read more than planned, fix the briefs
+and packing first (and check `readFactor`); the per-role scale absorbs what remains.
 
 ## Stage-0 calibration
 
@@ -219,8 +295,9 @@ record each number with its date and the Claude Code version, and pass it as `ar
 | e. Cache reads: same-cell vs mixed-cell stage | 3 agents on one cell vs 3 on mixed cells | `cacheRead` share; whether ">2 cells per stage" becomes a rail |
 | f. Master share at `max` vs `xhigh` | the same plan turn at each effort | the SKILL.md effort |
 
-The 0.1.1 defaults come from 119 agents of one real run (see "What 0.1.0 got wrong").
-Every key is optional; missing keys keep the default:
+The 0.1.1 defaults come from 119 agents of one real run (see "What 0.1.0 got wrong"); the
+0.1.2 defaults (`readFactor`, `scaleByRole`, `highsPerUnit`, `mediumsPerUnit`) come from
+the validation run above. Every key is optional; missing keys keep the default:
 
 ```js
 calib: {
@@ -229,9 +306,11 @@ calib: {
   baseCtxLean: 8000, baseCtx: 15000, turnsBase: 10, tokPerTurn: 2500,
   effortTurns: { low: 0.6, medium: 0.8, high: 1, xhigh: 1.3, max: 1.6 },
   outPerTurn: { low: 600, medium: 1000, high: 1500, xhigh: 1800, max: 2200 }, haikuOutPerTurn: 500,
-  readFactor: 3, ultraReadFactor: 4, ultraTurnCap: 80,
+  readFactor: 4, ultraReadFactor: 4, ultraTurnCap: 80,
   caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
-  inspectorIn: 12000, verifierInFrac: 0.5, scale: 1
+  inspectorIn: 12000, verifierInFrac: 0.5,
+  scaleByRole: { work: 1.3, verify: 0.3, inspect: 0.7 }, scale: 1,
+  highsPerUnit: 0.9, mediumsPerUnit: 4
 }
 ```
 
@@ -239,6 +318,9 @@ calib: {
 `maxTurns`, so keep the two in step.
 
 ## Worked envelopes (Opus session, E_ref = xhigh, 0.1.1 defaults)
+
+Not re-priced for 0.1.2's `readFactor` 4 / `scaleByRole`; see "What 0.1.1 got wrong"
+above for the measured validation numbers.
 
 ### 1. Review: 5 units on a payments package
 
