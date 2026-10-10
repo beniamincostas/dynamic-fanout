@@ -1,7 +1,7 @@
 {
   "name": "dynamic-fanout",
   "displayName": "Dynamic Fanout",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Master-routed model\u00d7effort agent fan-out, the lean replacement for ultracode's fan-out: cheaper on every task, with quality held by a parity cell, objective checks and one pre-planned fallback.",
   "author": {
     "name": "Beniamin Costas"

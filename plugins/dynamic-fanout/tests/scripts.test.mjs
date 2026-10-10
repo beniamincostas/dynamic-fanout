@@ -506,6 +506,130 @@ describe('stats', () => {
     });
   });
 
+  // ---------------- self-calibration, per-role (calib.scaleByRole) ----------------
+  describe('self-calibration: per-role', () => {
+    const CALIB_OUTPUT = path.join(FIX, 'workflow-output-calib.json');
+    const loadCalibResult = () => st.unwrap(JSON.parse(fs.readFileSync(CALIB_OUTPUT, 'utf8')));
+    // estimate: work = 1.0 + 1.0 (attempts) + 0.5 (sweep) = 2.5; verify = 1.0 + 0.5 = 1.5; inspect = 0.3
+    // card.calib.scaleByRole = { work: 1.2, verify: 0.8 } (inspect absent -> fallback 1)
+
+    test('estimatedUsdByRole sums unit attempts + sweeps (work), verifiers (verify), inspectors (inspect)', () => {
+      assert.deepEqual(st.estimatedUsdByRole(loadCalibResult()), { work: 2.5, verify: 1.5, inspect: 0.3 });
+      assert.deepEqual(st.estimatedUsdByRole({}), { work: 0, verify: 0, inspect: 0 });
+    });
+
+    test('actualUsdByRole reads byKind.{work+sweep+critic, verifier, inspector}; a missing kind is null, not 0', () => {
+      assert.deepEqual(
+        st.actualUsdByRole({ byKind: { work: { usd: 3 }, sweep: { usd: 0.4 }, verifier: { usd: 1 } } }),
+        { work: 3.4, verify: 1, inspect: null },
+      );
+      // no byKind at all (old-style ledger-cost shape) -> every role null
+      assert.deepEqual(st.actualUsdByRole({ totals: { usd: 9.4 } }), { work: null, verify: null, inspect: null });
+      // byKind present but a kind's usd is genuinely 0 -> still counted (0 is not "missing")
+      assert.deepEqual(st.actualUsdByRole({ byKind: { inspector: { usd: 0 } } }), { work: null, verify: null, inspect: 0 });
+    });
+
+    test('applyCalibrationByRole: ratio_role = actual/estimate, multiplied by the factor the run actually used', () => {
+      const s = st.emptyStats();
+      const result = loadCalibResult();
+      // work: ratio 3.0/2.5 = 1.2, used 1.2 (from card.calib.scaleByRole.work) -> target 1.44
+      // verify: ratio 1.0/1.5 = 0.6667, used 0.8 -> target 0.5333
+      // inspect: byKind has no inspector entry -> skipped (actual missing)
+      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 3.0 }, verifier: { usd: 1.0 } } } });
+      assert.equal(s.calib.scaleByRole.work, 1.44);
+      near(s.calib.scaleByRole.verify, 0.5333333333333333);
+      assert.ok(!('inspect' in s.calib.scaleByRole));
+      assert.deepEqual(s.calib.nByRole, { work: 1, verify: 1 });
+      assert.deepEqual(s.calib.lastByRole.work, { ratio: 1.2, used: 1.2, target: 1.44, at: 1 });
+      near(s.calib.lastByRole.verify.ratio, 2 / 3);
+    });
+
+    test('applyCalibrationByRole: a role whose estimate is <= 0 is skipped', () => {
+      const s = st.emptyStats();
+      const result = { ledger: { units: [], verifiers: [], inspectors: [], sweeps: [] } }; // every role estimates to 0
+      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 5 }, verifier: { usd: 2 }, inspector: { usd: 1 } } } });
+      assert.equal(s.calib, undefined); // nothing comparable -> no calib object created at all
+    });
+
+    test('applyCalibrationByRole: falls back to a used factor of 1 when the card carries no scaleByRole for a role', () => {
+      const s = st.emptyStats();
+      const result = loadCalibResult();
+      delete result.card.calib.scaleByRole.verify; // only work left on the card
+      // verify: ratio 1.0/1.5 = 0.6667, used falls back to 1 -> target 0.6667
+      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { verifier: { usd: 1.0 } } } });
+      near(s.calib.scaleByRole.verify, 2 / 3);
+      assert.equal(s.calib.lastByRole.verify.used, 1);
+    });
+
+    test('applyCalibrationByRole: a second observation folds into an EWA with alpha 0.5, per role independently', () => {
+      const s = st.emptyStats();
+      const result = loadCalibResult();
+      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 3.0 }, verifier: { usd: 1.0 } } } }); // work -> 1.44, verify -> 0.5333
+      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 2.5 }, verifier: { usd: 1.5 } } } });
+      // work: ratio 2.5/2.5 = 1.0, used 1.2 -> target 1.2 -> new = 0.5*1.2 + 0.5*1.44 = 1.32
+      // verify: ratio 1.5/1.5 = 1.0, used 0.8 -> target 0.8 -> new = 0.5*0.8 + 0.5*0.533333 = 0.666667
+      near(s.calib.scaleByRole.work, 1.32);
+      near(s.calib.scaleByRole.verify, 2 / 3);
+      assert.deepEqual(s.calib.nByRole, { work: 2, verify: 2 });
+      assert.equal(s.calib.lastByRole.work.at, 2);
+    });
+
+    test('applyCalibrationByRole clamps the per-role ratio to [0.1, 10]', () => {
+      const s = st.emptyStats();
+      const result = loadCalibResult();
+      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 1000 } } } }); // ratio -> 10
+      assert.equal(s.calib.lastByRole.work.ratio, 10);
+      const s2 = st.emptyStats();
+      st.applyCalibrationByRole(s2, { result, ledgerJson: { byKind: { work: { usd: 0.0001 } } } }); // ratio -> 0.1
+      assert.equal(s2.calib.lastByRole.work.ratio, 0.1);
+    });
+
+    test('applyCalibrationByRole migrates an old global calib.scale: legacyScale keeps it, scale resets to 1', () => {
+      const s = st.emptyStats();
+      st.applyCalibration(s, { actualUsd: 8, estimatedUsd: 4 }); // old-style global scale = 2
+      assert.equal(s.calib.scale, 2);
+      st.applyCalibrationByRole(s, { result: loadCalibResult(), ledgerJson: { byKind: { work: { usd: 3.0 } } } });
+      assert.equal(s.calib.legacyScale, 2);
+      assert.equal(s.calib.scale, 1);
+      assert.equal(s.calib.n, 1); // the old global counter is left untouched by the per-role write
+    });
+
+    test('applyCalibrationByRole is a no-op on calib.scale/legacyScale when nothing gets written', () => {
+      const s = st.emptyStats();
+      st.applyCalibration(s, { actualUsd: 8, estimatedUsd: 4 });
+      st.applyCalibrationByRole(s, { result: { ledger: {} }, ledgerJson: { byKind: {} } }); // nothing estimable
+      assert.equal(s.calib.scale, 2);
+      assert.equal(s.calib.legacyScale, undefined);
+    });
+
+    test('CLI: update --ledger with a byKind breakdown writes calib.scaleByRole and resets the global scale', () => {
+      const dir = tmpDir();
+      const statsFile = path.join(dir, 'stats.json');
+      const ledgerFile = path.join(dir, 'ledger.json');
+      fs.writeFileSync(ledgerFile, JSON.stringify({ byKind: { work: { usd: 3.0 }, verifier: { usd: 1.0 } }, totals: { usd: 4.0 } }));
+      const r = run('stats.mjs', ['update', CALIB_OUTPUT, '--file', statsFile, '--ledger', ledgerFile]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /calib\.scaleByRole=\{"work":1\.44,"verify":0\.53\}/);
+      const s = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
+      assert.equal(s.calib.scaleByRole.work, 1.44);
+      near(s.calib.scaleByRole.verify, 2 / 3 * 0.8);
+      assert.equal(s.calib.scale, 1);
+    });
+
+    test('CLI: --summary prints CALIB with scaleByRole (2 decimals) and omits the global scale when it is 1', () => {
+      const dir = tmpDir();
+      const statsFile = path.join(dir, 'stats.json');
+      const ledgerFile = path.join(dir, 'ledger.json');
+      fs.writeFileSync(ledgerFile, JSON.stringify({ byKind: { work: { usd: 3.0 }, verifier: { usd: 1.0 } } }));
+      run('stats.mjs', ['update', CALIB_OUTPUT, '--file', statsFile, '--ledger', ledgerFile]);
+      const sum = run('stats.mjs', ['--summary', 'review', '--file', statsFile]);
+      assert.equal(sum.status, 0, sum.stderr);
+      assert.doesNotMatch(sum.stdout, /"scale":/); // scale is 1 after migration -> omitted
+      assert.match(sum.stdout, /CALIB \{"scaleByRole":\{"work":1\.44,"verify":0\.53\}\}/);
+      assert.match(sum.stdout, /pass this back to the foreman as args\.calib/);
+    });
+  });
+
   test('CLI: update creates dirs, is the sole writer, skips a duplicate run; --summary reads it', () => {
     const dir = tmpDir();
     const file = path.join(dir, 'nested', 'deeper', 'routing-stats.json');

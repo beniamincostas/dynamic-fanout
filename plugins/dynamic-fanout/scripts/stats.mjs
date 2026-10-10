@@ -16,6 +16,19 @@
 // one line telling the master to pass it back as args.calib) whenever calib.scale exists, so
 // the next run's estimate can be scaled by what the last run actually cost.
 //
+// Per-role calibration: when the --ledger file carries a `byKind` breakdown (a real
+// ledger-cost.mjs --json output, not the old bare {totals:{usd}} shape), the comparison runs
+// per role instead of globally — work (unit attempts + sweep + critic), verify (verifier
+// batches) and inspect (inspector calls) each get their own ratio = actual/estimate, clamped to
+// [0.1, 10]. The ratio is multiplied by the scaleByRole factor the run actually used
+// (result.card.calib.scaleByRole[role], or 1 if the card carried none) to get this
+// observation's target, which folds into stats.calib.scaleByRole[role] as an EWMA (alpha 0.5).
+// The first time any role is written this way, the old global calib.scale is superseded: its
+// prior value is kept at calib.legacyScale and calib.scale itself is reset to 1. A --ledger
+// file without byKind still drives the old global calib.scale path untouched. `--summary`
+// prints `CALIB {"scaleByRole":{...}}` (the global "scale" included only when it differs from
+// 1) whenever scaleByRole exists, taking priority over the plain scale line.
+//
 // Default file: $DYNAMIC_FANOUT_STATS, else ~/.claude/dynamic-fanout/routing-stats.json.
 // Cohort key: kind/role/D<d>V<v>B<b>T<t>/<cell of p>/<ctx>
 //   -> {n, firstPassOk, rerouted, refutedLater, ungroundedLater, unverified, conf:{hi:{n,ok}, lo:{n,ok}}, fb:{cell:n}}
@@ -54,6 +67,9 @@ export const RULES = { promoteN: 4, promoteBelow: 0.8, reserveN: 4, confMinN: 4,
 export const CALIB_ALPHA = 0.5;
 export const CALIB_MIN = 0.3;
 export const CALIB_MAX = 5;
+export const ROLES = ['work', 'verify', 'inspect'];
+export const ROLE_CALIB_MIN = 0.1;
+export const ROLE_CALIB_MAX = 10;
 
 export function defaultFile(env = process.env) {
   return env.DYNAMIC_FANOUT_STATS || path.join(os.homedir(), '.claude', 'dynamic-fanout', 'routing-stats.json');
@@ -262,6 +278,89 @@ export function applyCalibration(stats, { actualUsd, estimatedUsd }) {
   return stats;
 }
 
+const sumEst = (list, key = 'estUsd') => (Array.isArray(list) ? list : []).reduce((t, x) => t + (Number(x?.[key]) || 0), 0);
+
+/**
+ * This run's per-role $ ESTIMATE, straight from the foreman's own workflow-output ledger
+ * (never from ledger-cost actuals): work = every unit attempt + every sweep round;
+ * verify = every verifier batch; inspect = every inspector call. Pure.
+ */
+export function estimatedUsdByRole(result) {
+  const ledger = result?.ledger ?? {};
+  const attempts = (Array.isArray(ledger.units) ? ledger.units : []).flatMap((u) => u?.attempts ?? []);
+  return {
+    work: sumEst(attempts) + sumEst(ledger.sweeps),
+    verify: sumEst(ledger.verifiers),
+    inspect: sumEst(ledger.inspectors),
+  };
+}
+
+/**
+ * This run's per-role $ ACTUAL, from a ledger-cost --json file's `byKind` totals: work pulls
+ * in sweep and critic when those kinds are present (a unit's work role covers the gap-sweep
+ * and completeness critic too). A role whose kind(s) never appear in byKind (nothing of that
+ * kind ran, or an old-style ledger-cost file with no byKind at all) comes back null — the
+ * caller skips it rather than treating a true zero as "no data". Pure.
+ */
+export function actualUsdByRole(ledgerJson) {
+  const byKind = ledgerJson && typeof ledgerJson === 'object' ? ledgerJson.byKind : null;
+  if (!byKind || typeof byKind !== 'object') return { work: null, verify: null, inspect: null };
+  const usd = (k) => Number(byKind[k]?.usd) || 0;
+  const work = ['work', 'sweep', 'critic'].some((k) => k in byKind)
+    ? ['work', 'sweep', 'critic'].reduce((t, k) => t + (k in byKind ? usd(k) : 0), 0)
+    : null;
+  return {
+    work,
+    verify: 'verifier' in byKind ? usd('verifier') : null,
+    inspect: 'inspector' in byKind ? usd('inspector') : null,
+  };
+}
+
+/**
+ * Fold one run's per-role estimate/actual into stats.calib.scaleByRole (mutates and returns
+ * stats). For each role: ratio = actual/estimate, clamped to [ROLE_CALIB_MIN, ROLE_CALIB_MAX];
+ * a role is skipped when its estimate is <= 0 or its actual is missing (null/undefined) — not
+ * when its actual is a genuine zero. `used` is the scaleByRole factor this run actually ran
+ * with (result.card.calib.scaleByRole[role], falling back to 1 when the card carries none), so
+ * target = used * ratio is what the factor SHOULD have been; the new scale is an EWMA of the
+ * old one and that target (alpha 0.5), or the target outright on a role's first observation.
+ * Migration: the old single calib.scale is superseded by per-role scaling, so the first write
+ * of any role here parks its value in calib.legacyScale and resets calib.scale to 1.
+ */
+export function applyCalibrationByRole(stats, { result, ledgerJson }) {
+  const est = estimatedUsdByRole(result);
+  const act = actualUsdByRole(ledgerJson);
+  const usedByRole = result?.card?.calib?.scaleByRole ?? {};
+  // Compute every role's update before touching stats, so a run with nothing to compare
+  // against (every role's estimate <= 0, or every actual missing) leaves stats.calib — and
+  // scaleByRole/nByRole/lastByRole — exactly as it found them, rather than creating empty shells.
+  const updates = [];
+  for (const role of ROLES) {
+    const estimate = est[role];
+    const actual = act[role];
+    if (!(estimate > 0) || actual === null || actual === undefined) continue;
+    const ratio = Math.min(ROLE_CALIB_MAX, Math.max(ROLE_CALIB_MIN, actual / estimate));
+    const used = typeof usedByRole[role] === 'number' ? usedByRole[role] : 1;
+    updates.push({ role, ratio, used, target: used * ratio });
+  }
+  if (!updates.length) return stats;
+  const calib = (stats.calib ??= { n: 0, scale: null, last: null });
+  const byRole = (calib.scaleByRole ??= {});
+  const nByRole = (calib.nByRole ??= {});
+  const lastByRole = (calib.lastByRole ??= {});
+  for (const { role, ratio, used, target } of updates) {
+    const old = byRole[role];
+    byRole[role] = typeof old === 'number' ? CALIB_ALPHA * target + (1 - CALIB_ALPHA) * old : target;
+    nByRole[role] = (nByRole[role] || 0) + 1;
+    lastByRole[role] = { ratio, used, target, at: nByRole[role] };
+  }
+  // The old global calib.scale is superseded the first time per-role data lands: park its
+  // value at calib.legacyScale (once) and reset calib.scale to 1 (its neutral, "no-op" value).
+  if (typeof calib.scale === 'number' && calib.scale !== 1 && calib.legacyScale === undefined) calib.legacyScale = calib.scale;
+  calib.scale = 1;
+  return stats;
+}
+
 const pct = (a, b) => (b > 0 ? Math.round((100 * a) / b) : 0);
 const r1 = (x) => (Math.round(x * 10) / 10).toString();
 
@@ -352,8 +451,16 @@ export function main(argv = process.argv.slice(2), env = process.env) {
   if (a.cmd === 'summary' && a.kind) {
     const stats = loadStats(file);
     console.log(summary(stats, a.kind));
-    if (typeof stats.calib?.scale === 'number') {
-      console.log(`CALIB {"scale":${stats.calib.scale.toFixed(2)}}`);
+    const calib = stats.calib;
+    const roleKeys = calib?.scaleByRole ? ROLES.filter((r) => typeof calib.scaleByRole[r] === 'number') : [];
+    if (roleKeys.length) {
+      const parts = [];
+      if (typeof calib.scale === 'number' && calib.scale !== 1) parts.push(`"scale":${calib.scale.toFixed(2)}`);
+      parts.push(`"scaleByRole":{${roleKeys.map((r) => `"${r}":${calib.scaleByRole[r].toFixed(2)}`).join(',')}}`);
+      console.log(`CALIB {${parts.join(',')}}`);
+      console.log('pass this back to the foreman as args.calib on the next run');
+    } else if (typeof calib?.scale === 'number') {
+      console.log(`CALIB {"scale":${calib.scale.toFixed(2)}}`);
       console.log('pass this scale back to the foreman as args.calib.scale on the next run');
     }
     return 0;
@@ -416,7 +523,14 @@ export function main(argv = process.argv.slice(2), env = process.env) {
     }
     applyRun(stats, result, { kind: a.kind ?? undefined, runId });
     let calibNote = '';
-    if (ledgerJson) {
+    if (ledgerJson && ledgerJson.byKind && typeof ledgerJson.byKind === 'object') {
+      const before = JSON.stringify(stats.calib?.scaleByRole ?? null);
+      applyCalibrationByRole(stats, { result, ledgerJson });
+      const after = stats.calib?.scaleByRole;
+      calibNote = JSON.stringify(after ?? null) !== before
+        ? `, calib.scaleByRole=${JSON.stringify(Object.fromEntries(ROLES.filter((r) => typeof after[r] === 'number').map((r) => [r, Number(after[r].toFixed(2))])))}`
+        : ', calib skipped (no role estimate/actual to compare)';
+    } else if (ledgerJson) {
       const estimatedUsd = estimatedUsdOf(result);
       const before = stats.calib?.n ?? 0;
       applyCalibration(stats, { actualUsd: Number(ledgerJson?.totals?.usd) || 0, estimatedUsd });

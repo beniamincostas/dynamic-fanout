@@ -84,7 +84,7 @@ Why: in a benchmark, a solo review cost under 0.15× ultracode but missed exactl
 ## 2. Scout and pack (at most 2 batched turns)
 
 1. **Scout with Glob / `grep -l` / `grep -c` / `wc -c` / `git ls-files`.** Tokens ≈ bytes / 4, and count the CLAUDE.md files on each unit's path. Never read what a worker will read; that is paid twice.
-2. In the same batch, run `node <scripts>/stats.mjs --summary <kind>` for routing history. If it prints a `CALIB` line, pass that object as `args.calib` (it carries `scale`, the measured actual ÷ estimate ratio).
+2. In the same batch, run `node <scripts>/stats.mjs --summary <kind>` for routing history. If it prints a `CALIB` line, pass that object as `args.calib` (it carries `scaleByRole` — the measured actual ÷ estimate ratio per work/verify/inspect role — or a legacy `scale`).
 3. Exclude `.env`, key files, duplicate copies of the same code (vendored or mirrored folders) and generated `output/`, unless one of them is the target.
 4. **Pack:**
    - split a unit off only if its work is ≥2× its path's fixed context;
@@ -116,7 +116,7 @@ At ≥3 units, read `references/routing.md` and follow it. In short:
   - It is `null` for parity units, superseding units, peripheral B0 units, and when `p` ≥ W·high (strengthen the check instead).
   - Units that carry the answer get a non-null `fb`, unless `p` ≥ W·high.
 - **Context:** `ctx:'omit'` is the default, parity included: put the unit's constraints in the shared **rules capsule** plus `path:line` pointers into the CLAUDE.md sections it may need (read on demand). Use `ctx:'keep'` only for a G2 unit whose traps the capsule cannot state.
-- **Verifiers:** a verifier's model must be ≥ every non-parity unit's `p` **and** `fb` model. Declare the rungs (`verify.rungs`) and `verify.cells.V3/V4` (default W·high).
+- **Verifiers:** a verifier's model must be ≥ every non-parity unit's `p` **and** `fb` model. Declare the rungs (`verify.rungs`) and `verify.cells.V3/V4` (default W·high). `medium` defaults to **V1** (grounded quote, no skeptic) — raise it to V2 (`rungs.medium` or a `V2` token in `check`) only for mediums that matter enough to spend one; a typical review has far more mediums than the reserve can check.
 - **Cells:** use ≤2 cells per stage so agents share a prompt cache. Merge the smallest cell *up*, never down.
 - **`why`:** every card carries one (≤140 chars) naming the feature that decided its route.
 
@@ -137,7 +137,7 @@ ultracode basis: 8 = 5 clusters + 3 dimensions, 4 verifiers · U $40.53 · plan 
 u1      opus·xhigh (parity) → —     omit · V3     30t  recall unverifiable; marks invoices paid
 u2-u4   sonnet·medium → opus·high   omit · quote  18-24t  C1, quotes catch misses
 u6      sonnet·low → sonnet·medium  omit · set    10t  grep set-equality
-verify: blocker/high→V3 (opus·high), medium→V2 · topK 12 · sweep 1
+verify: blocker/high→V3 (opus·high), medium→V1 (quote) · topK 12 · sweep 1
 override: --route u4=opus·high · --ceiling 5 · --solo · or just let it run
 ```
 
