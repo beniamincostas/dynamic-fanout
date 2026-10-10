@@ -14,6 +14,14 @@
 // verdictByBeforeAudit. Input: the Workflow output file ({summary, agentCount, logs, result})
 // or fanout.js's RESULT itself; claims are read from results.claims (PENDING claims of a
 // stage:'work' run are audited but never change verdict).
+//
+// Path robustness: a claim's evidence.file is the raw path the worker typed, which may be
+// just a basename ('fanout.js') while the unit's real scope is a longer path — the worker
+// read the right file but cited it short. When the cited path does not exist under --root,
+// try (a) that unit's results.units[unit].files_read entries ending with '/'+cited, then (b)
+// any unit's files_read entry with that basename, each only when the match is unique. A
+// resolved fallback path is used for the quote check and recorded as `resolvedPath` on the
+// evidence item; ambiguous (2+ candidates) or no match leaves the quote unresolved as before.
 // DOWNGRADE-ONLY: this script never raises a verdict and never launches agents.
 // Zero dependencies; Node >= 20.
 
@@ -88,20 +96,63 @@ export function findElsewhere(lines, quote) {
   return null;
 }
 
-/** Resolve one evidence record {file, line, quote} under root. */
-export function checkEvidence(ev, root, cache = new Map()) {
+/** Read a file through the shared cache; null (cached) on any failure. */
+function readCached(abs, cache) {
+  let text = cache.get(abs);
+  if (text === undefined) {
+    try { text = fs.readFileSync(abs, 'utf8'); } catch { text = null; }
+    cache.set(abs, text);
+  }
+  return text;
+}
+
+/** Distinct values, order preserved. */
+const uniq = (arr) => [...new Set(arr)];
+
+/**
+ * When `cited` does not exist under --root, look for it among reported files_read lists:
+ * (a) the same unit's own files_read, suffix-matched ('/' + cited) — a unique hit only;
+ * (b) failing that, any unit's files_read with the same basename — again unique only.
+ * Returns the resolved path, or null when there is no match or more than one candidate.
+ */
+export function resolveViaFilesRead(cited, { unit, resultsUnits } = {}) {
+  if (!resultsUnits || typeof resultsUnits !== 'object') return null;
+  const f = String(cited ?? '').replace(/\\/g, '/');
+  if (!f) return null;
+  const listOf = (u) => (resultsUnits[u] && Array.isArray(resultsUnits[u].files_read) ? resultsUnits[u].files_read : []);
+  const suffix = (p) => String(p).replace(/\\/g, '/').endsWith('/' + f);
+  if (unit != null) {
+    const own = uniq(listOf(unit).filter(suffix));
+    if (own.length === 1) return own[0];
+  }
+  const base = path.basename(f);
+  const all = [];
+  for (const u of Object.keys(resultsUnits)) all.push(...listOf(u));
+  const byBase = uniq(all.filter((p) => path.basename(String(p).replace(/\\/g, '/')) === base));
+  return byBase.length === 1 ? byBase[0] : null;
+}
+
+/**
+ * Resolve one evidence record {file, line, quote} under root. `opts.unit` + `opts.resultsUnits`
+ * (the claim's unit id and the RESULT's results.units map) enable the files_read fallback above
+ * when the cited file is missing under root; without them this falls back to plain unresolved.
+ */
+export function checkEvidence(ev, root, cache = new Map(), opts = {}) {
   if (!ev || typeof ev !== 'object') return { file: null, line: null, resolved: false, foundAt: null, error: 'malformed' };
   const { file, line } = splitFileLine(ev.file ?? ev.path, ev.line);
   const quote = ev.quote ?? ev.text;
   const base = { file: file ?? null, line: line ?? null };
   if (!file) return { ...base, resolved: false, foundAt: null, error: 'no-file' };
   const abs = path.isAbsolute(file) ? file : path.join(root, file);
-  let text = cache.get(abs);
-  if (text === undefined) {
-    try { text = fs.readFileSync(abs, 'utf8'); } catch { text = null; }
-    cache.set(abs, text);
+  const text = readCached(abs, cache);
+  if (text === null) {
+    const resolvedPath = resolveViaFilesRead(file, opts);
+    if (resolvedPath != null) {
+      const altText = readCached(resolvedPath, cache);
+      if (altText !== null) return { ...base, ...checkQuote(altText, line, quote), resolvedPath };
+    }
+    return { ...base, resolved: false, foundAt: null, error: 'missing-file' };
   }
-  if (text === null) return { ...base, resolved: false, foundAt: null, error: 'missing-file' };
   return { ...base, ...checkQuote(text, line, quote) };
 }
 
@@ -111,11 +162,11 @@ function asList(ev) {
 }
 
 /** A string counter_quote has no location: grounded if it appears in any evidence file. */
-function checkCounterQuote(cq, claim, root, cache) {
-  if (cq && typeof cq === 'object') return checkEvidence(cq, root, cache);
+function checkCounterQuote(cq, claim, root, cache, opts) {
+  if (cq && typeof cq === 'object') return checkEvidence(cq, root, cache, opts);
   if (typeof cq === 'string' && cq.trim()) {
     for (const ev of asList(claim.evidence)) {
-      const r = checkEvidence({ file: ev?.file, line: null, quote: cq }, root, cache);
+      const r = checkEvidence({ file: ev?.file, line: null, quote: cq }, root, cache, opts);
       if (r.foundAt != null) return { file: r.file, line: r.foundAt, resolved: true, how: 'unlocated', foundAt: r.foundAt };
     }
     return { file: null, line: null, resolved: false, foundAt: null, error: 'unlocated' };
@@ -146,12 +197,14 @@ export function audit(result, { root = process.cwd() } = {}) {
   const cache = new Map();
   const src = result?.results?.claims;
   const claims = Array.isArray(src) ? structuredClone(src) : [];
+  const resultsUnits = result?.results?.units ?? {};
   const report = { claims: 0, quotes: 0, resolved: 0, counterQuotes: 0, counterResolved: 0, downgrades: [], items: [] };
 
   for (const c of claims) {
     report.claims++;
     const before = c.verdict ?? null;
-    const evid = asList(c.evidence).map((ev) => checkEvidence(ev, root, cache));
+    const opts = { unit: c.unit ?? null, resultsUnits };
+    const evid = asList(c.evidence).map((ev) => checkEvidence(ev, root, cache, opts));
     report.quotes += evid.length;
     report.resolved += evid.filter((e) => e.resolved).length;
     const item = { cid: c.cid ?? null, unit: c.unit ?? null, before, after: before, evidence: evid };
@@ -159,7 +212,7 @@ export function audit(result, { root = process.cwd() } = {}) {
     let verdict = before;
     let reason = null;
     if (verdict === 'REFUTED') {
-      const cq = checkCounterQuote(c.counter_quote, c, root, cache);
+      const cq = checkCounterQuote(c.counter_quote, c, root, cache, opts);
       item.counterQuote = cq;
       report.counterQuotes++;
       if (cq.resolved) report.counterResolved++;

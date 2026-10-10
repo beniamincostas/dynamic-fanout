@@ -123,6 +123,78 @@ describe('check-evidence', () => {
     assert.equal(patched.result.evidenceAudit.downgrades.length, 3);
   });
 
+  // ---------------- files_read path-robustness fallback ----------------
+  describe('resolveViaFilesRead', () => {
+    const nested = path.join(ROOT, 'lib/nested/mod.py');
+    const other = path.join(ROOT, 'lib/other/mod.py');
+
+    test('own unit files_read, suffix-matched beyond the basename: unique -> resolves', () => {
+      const resultsUnits = { u1: { files_read: [nested] }, u2: { files_read: [] } };
+      assert.equal(ce.resolveViaFilesRead('nested/mod.py', { unit: 'u1', resultsUnits }), nested);
+    });
+
+    test('own unit files_read with no matching suffix falls through to the all-units basename scan', () => {
+      const resultsUnits = { u1: { files_read: ['lib/unrelated.py'] }, u2: { files_read: [nested] } };
+      assert.equal(ce.resolveViaFilesRead('mod.py', { unit: 'u1', resultsUnits }), nested);
+    });
+
+    test('basename matches two different files_read entries: ambiguous -> null', () => {
+      // u1's own files_read matches uniquely, so it resolves via (a) without ever consulting
+      // the other unit; a unit with no own match (or none at all) falls to the ambiguous (b) scan.
+      const resultsUnits = { u1: { files_read: [nested] }, u2: { files_read: [other] } };
+      assert.equal(ce.resolveViaFilesRead('mod.py', { unit: 'u1', resultsUnits }), nested);
+      assert.equal(ce.resolveViaFilesRead('mod.py', { unit: 'u3', resultsUnits }), null);
+      assert.equal(ce.resolveViaFilesRead('mod.py', { resultsUnits }), null);
+    });
+
+    test('no match anywhere, or no resultsUnits at all -> null', () => {
+      assert.equal(ce.resolveViaFilesRead('nope.py', { unit: 'u1', resultsUnits: { u1: { files_read: [nested] } } }), null);
+      assert.equal(ce.resolveViaFilesRead('mod.py', {}), null);
+      assert.equal(ce.resolveViaFilesRead('mod.py', undefined), null);
+    });
+  });
+
+  test('checkEvidence: missing file under root resolves via the unit\'s own files_read (unique suffix match)', () => {
+    const resultsUnits = { u1: { files_read: [path.join(ROOT, 'lib/nested/mod.py')] } };
+    const r = ce.checkEvidence({ file: 'nested/mod.py', line: 3, quote: 'TIMEOUT_SECONDS = 30' }, ROOT, new Map(), { unit: 'u1', resultsUnits });
+    assert.equal(r.resolved, true);
+    assert.equal(r.resolvedPath, path.join(ROOT, 'lib/nested/mod.py'));
+  });
+
+  test('checkEvidence: missing file resolves via another unit\'s files_read (basename match)', () => {
+    const resultsUnits = { u1: { files_read: ['lib/unrelated.py'] }, u2: { files_read: [path.join(ROOT, 'lib/nested/mod.py')] } };
+    const r = ce.checkEvidence({ file: 'mod.py', line: 3, quote: 'TIMEOUT_SECONDS = 30' }, ROOT, new Map(), { unit: 'u1', resultsUnits });
+    assert.equal(r.resolved, true);
+    assert.equal(r.resolvedPath, path.join(ROOT, 'lib/nested/mod.py'));
+  });
+
+  test('checkEvidence: ambiguous basename match (no own-unit hit) stays unresolved, no resolvedPath, same as before the fallback existed', () => {
+    const resultsUnits = { u1: { files_read: [path.join(ROOT, 'lib/nested/mod.py')] }, u2: { files_read: [path.join(ROOT, 'lib/other/mod.py')] } };
+    const r = ce.checkEvidence({ file: 'mod.py', line: 1, quote: 'anything' }, ROOT, new Map(), { unit: 'u3', resultsUnits });
+    assert.equal(r.resolved, false);
+    assert.equal(r.error, 'missing-file');
+    assert.equal(r.resolvedPath, undefined);
+  });
+
+  test('checkEvidence: without opts (no resultsUnits), a missing file behaves exactly as before', () => {
+    const r = ce.checkEvidence({ file: 'nested/mod.py', line: 3, quote: 'TIMEOUT_SECONDS = 30' }, ROOT);
+    assert.deepEqual([r.resolved, r.error, r.resolvedPath], [false, 'missing-file', undefined]);
+  });
+
+  test('audit: a claim citing a short path (worker shorthand) resolves through files_read instead of staying UNVERIFIED', () => {
+    const res = {
+      results: {
+        units: { w1: { files_read: ['lib/nested/mod.py'].map((p) => path.join(ROOT, p)) } },
+        claims: [{ cid: 'k1', unit: 'w1', verdict: 'CONFIRMED',
+          evidence: [{ file: 'mod.py', line: 3, quote: 'TIMEOUT_SECONDS = 30' }] }],
+      },
+    };
+    const { report, claims } = ce.audit(res, { root: ROOT });
+    assert.equal(claims[0].verdict, 'CONFIRMED'); // not downgraded
+    assert.equal(report.resolved, 1);
+    assert.equal(report.items[0].evidence[0].resolvedPath, path.join(ROOT, 'lib/nested/mod.py'));
+  });
+
   test('CLI: summary, --json and --write; accepts bare RESULT too', () => {
     const dir = tmpDir();
     const outFile = path.join(dir, 'patched.json');
@@ -355,6 +427,83 @@ describe('stats', () => {
     assert.match(out, /RESERVE PRIOR role=review/);
     assert.ok(!out.includes('extract/'), 'n=1 cohort hidden');
     assert.match(out, /more cohort/);
+  });
+
+  // ---------------- self-calibration (calib.scale) ----------------
+  describe('self-calibration', () => {
+    test('estimatedUsdOf reads committedUsd + rerouteUsd from digest.money', () => {
+      assert.equal(st.estimatedUsdOf(st.unwrap(loadOutput())), 4.2 + 0.5);
+      assert.equal(st.estimatedUsdOf({}), 0);
+    });
+
+    test('applyCalibration: first observation sets calib.scale outright (no prior EWA)', () => {
+      const s = st.emptyStats();
+      st.applyCalibration(s, { actualUsd: 8, estimatedUsd: 4 }); // ratio 2
+      assert.deepEqual(s.calib, { n: 1, scale: 2, last: { ratio: 2, at: 1 } });
+    });
+
+    test('applyCalibration: a second observation folds in as an EWA with alpha 0.5', () => {
+      const s = st.emptyStats();
+      st.applyCalibration(s, { actualUsd: 8, estimatedUsd: 4 });  // ratio 2    -> scale 2
+      st.applyCalibration(s, { actualUsd: 4, estimatedUsd: 4 });  // ratio 1    -> scale 0.5*1 + 0.5*2 = 1.5
+      assert.equal(s.calib.n, 2);
+      assert.equal(s.calib.scale, 1.5);
+      assert.deepEqual(s.calib.last, { ratio: 1, at: 2 });
+    });
+
+    test('applyCalibration clamps the ratio to [0.3, 5] before it enters the average', () => {
+      const s = st.emptyStats();
+      st.applyCalibration(s, { actualUsd: 100, estimatedUsd: 1 }); // ratio 100 -> clamped to 5
+      assert.equal(s.calib.scale, 5);
+      st.applyCalibration(s, { actualUsd: 0.01, estimatedUsd: 10 }); // ratio 0.001 -> clamped to 0.3
+      assert.equal(s.calib.scale, 0.5 * 0.3 + 0.5 * 5);
+    });
+
+    test('applyCalibration is a no-op when estimatedUsd <= 0 (nothing to compare against)', () => {
+      const s = st.emptyStats();
+      st.applyCalibration(s, { actualUsd: 8, estimatedUsd: 0 });
+      st.applyCalibration(s, { actualUsd: 8, estimatedUsd: -1 });
+      assert.equal(s.calib, undefined);
+    });
+
+    test('CLI: update --ledger folds the ledger-cost totals into calib.scale', () => {
+      const dir = tmpDir();
+      const statsFile = path.join(dir, 'stats.json');
+      const ledgerFile = path.join(dir, 'ledger.json');
+      // fixture run estimates 4.2 + 0.5 = 4.7; actual below says the real spend was 9.4 -> ratio 2
+      fs.writeFileSync(ledgerFile, JSON.stringify({ totals: { usd: 9.4 } }));
+      const r = run('stats.mjs', ['update', OUTPUT, '--file', statsFile, '--ledger', ledgerFile]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /calib\.scale=2\.00/);
+      const s = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
+      assert.deepEqual(s.calib, { n: 1, scale: 2, last: { ratio: 2, at: 1 } });
+    });
+
+    test('CLI: --summary prints a CALIB line and an instruction line once calib.scale exists, not before', () => {
+      const dir = tmpDir();
+      const statsFile = path.join(dir, 'stats.json');
+      const before = run('stats.mjs', ['update', OUTPUT, '--file', statsFile]);
+      assert.equal(before.status, 0, before.stderr);
+      const sumBefore = run('stats.mjs', ['--summary', 'review', '--file', statsFile]);
+      assert.ok(!/CALIB/.test(sumBefore.stdout));
+
+      const ledgerFile = path.join(dir, 'ledger.json');
+      fs.writeFileSync(ledgerFile, JSON.stringify({ totals: { usd: 2.35 } })); // ratio 0.5
+      const dir2 = tmpDir();
+      const statsFile2 = path.join(dir2, 'stats.json');
+      run('stats.mjs', ['update', OUTPUT, '--file', statsFile2, '--ledger', ledgerFile]);
+      const sumAfter = run('stats.mjs', ['--summary', 'review', '--file', statsFile2]);
+      assert.equal(sumAfter.status, 0, sumAfter.stderr);
+      assert.match(sumAfter.stdout, /CALIB \{"scale":0\.50\}/);
+      assert.match(sumAfter.stdout, /pass this scale back to the foreman as args\.calib/);
+    });
+
+    test('CLI: --ledger with a non-existent file errors out (status 2) instead of recording the run', () => {
+      const dir = tmpDir();
+      const r = run('stats.mjs', ['update', OUTPUT, '--file', path.join(dir, 's.json'), '--ledger', path.join(dir, 'nope.json')]);
+      assert.equal(r.status, 2);
+      assert.match(r.stderr, /cannot read/);
+    });
   });
 
   test('CLI: update creates dirs, is the sole writer, skips a duplicate run; --summary reads it', () => {

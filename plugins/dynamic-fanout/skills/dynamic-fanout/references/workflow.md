@@ -12,7 +12,10 @@ Read this file when you build the args or read the result.
 Workflow({ name: "dynamic-fanout:fanout", args: <ARGS object, not a string> })
 ```
 Pass `args` as a JSON object. `dryRun: true` validates + prices and returns the priced
-card without launching anything — use it when unsure the plan passes the rails.
+card without launching anything — use it when unsure the plan passes the rails. It is
+also **the pricing tool for implementation passes**: `kind: 'implement'` is accepted
+only with `dryRun: true`, and its card (per-unit `estUsd` and `turns`, U/P/R/C) is the
+envelope the implement playbook budgets against.
 
 ## ARGS (v2)
 
@@ -70,7 +73,7 @@ card without launching anything — use it when unsure the plan passes the rails
   overrides: [{ id: 'u2', p: { model: 'opus', effort: 'high' }, fb: null, by: 'user' }],
   //  an override's `p` with no `fb` clears any old fallback (fb becomes null) — a
   //  re-route target needs no fb of its own; `by` is free text, any value exempts rails
-  calib: { /* optional stage-0 numbers, see economics.md */ },
+  calib: { /* optional; at least the CALIB line from stats --summary (scale), see economics.md */ },
   agentTypes: { worker, workerCtx, workerMcp, implementer, skeptic, inspector },  // optional overrides
   claims: [ /* stage 'verify' only: results.claims from the 'work' stage, unchanged */ ],
   carry:  { committedUsd: 0, rerouteUsd: 0, invariants: [] }
@@ -85,14 +88,21 @@ name from a unit's `numbers`) or `sum(u1.by_code.)` (sum of every number in u1 w
 name starts with `by_code.`). Evaluated in integer cents after all units finish; a
 failure is reported in `digest.invariants` for the master — it never re-routes.
 
-## Agent types (`unitAgentType`)
+## Agent types (`typeKey` / `unitAgentType`) and turn caps
 
 The foreman picks each unit's agent type; the master never names one directly. In order:
 
-1. `role === 'implement'` → `dynamic-fanout:implementer`
-2. else `ctx === 'keep'` → `dynamic-fanout:worker-ctx`
-3. else the unit's vector has `T === 2` (MCP or long tool loops) → `dynamic-fanout:worker-mcp`
-4. else → `dynamic-fanout:worker`
+| # | Condition | typeKey → agent | Turn cap | Prefix priced |
+|---|---|---|---|---|
+| 1 | `role === 'implement'` | `implementer` → `dynamic-fanout:implementer` | 60 | 15k + `ctxTok` |
+| 2 | else `ctx === 'keep'` | `workerCtx` → `dynamic-fanout:worker-ctx` | 30 | 15k + `ctxTok` |
+| 3 | else vector `T === 2` (MCP or long tool loops) | `workerMcp` → `dynamic-fanout:worker-mcp` | 35 | 15k |
+| 4 | else | `worker` → `dynamic-fanout:worker` | 30 | 8k (lean) |
+| — | verifiers / inspectors | `skeptic` / `inspector` | 12 / 6 | 8k (lean) |
+
+The cap is the agent file's `maxTurns` and the same number `price()` uses (`calib.caps`).
+Each unit's planned turns = min(cap, round((10 + in/2500) × effort factor)); the card
+prints them as `turns`, and the prompt states them (see "Unit prompt" below).
 
 `agentTypes` overrides one or more of these by name (`workerMcp` is the override key for
 step 3); an override still has to be a real agent file. `worker`/`worker-ctx`-adjacent
@@ -123,7 +133,7 @@ solo.
 | cell model unknown; cell model above S without `allowUp`; a Fable session running a non-parity unit on fable; >1 allow-up unit in the whole run | `tier u1:` |
 | effort missing (non-haiku) or unknown; effort above `refEffort` (warning, not error, for an overridden unit) | `effort u1:` |
 | `fb` not strictly stronger than `p`; a `supersedes` unit with non-null `fb` | `fb u1:` |
-| parity unit (V0∧B2∧D≥1) not on S·refEffort with `ctx:'keep'`, or with non-null `fb` (skipped for an overridden unit) | `parity u1:` |
+| parity unit (V0∧B2∧D≥1) not on S·refEffort, or with non-null `fb` (skipped for an overridden unit); `ctx` is not checked — `omit` with a capsule is the default | `parity u1:` |
 | `check` missing; `none` outside parity; n=1 without `rederive` in check | `check u1:` |
 | verify rung for a severity not one of V0..V4 | `verify:` |
 | V3/V4 cell model unknown or haiku; effort missing, unknown, or above `refEffort`; model above S without `allowUp`; weaker (model) than a non-parity producer | `verify:` |
@@ -134,7 +144,9 @@ solo.
 | planned agents > `caps.maxAgents` | `caps:` |
 
 Warnings only: >2 distinct cells in the work stage (cache sharing, `cache:`); planned
-agents > 25 (`size:`); a verifier cell weaker than a user-overridden producer (`verify:`);
+agents > 25 (`size:`); for `review`/`research` with ≥3 units, more than 70 % of planned
+work-unit spend on S (`routing: X% of planned work-unit spend runs on <S>; split
+mechanical work (inventory, consistency, mapping, extraction) into sonnet units`); a verifier cell weaker than a user-overridden producer (`verify:`);
 with any override, plan ≈ U or more (`money:`); a `parityBound` run (`money:`); an
 override naming a unit id that does not exist (`override <id>: no such unit`).
 
@@ -154,28 +166,44 @@ and higher effort.
 
 | | Meaning |
 |---|---|
-| **U** | ultracode-equivalent: `ultra.agents` + `ultra.verifiers` priced at S·refEffort with `ultra.ctxTok` CLAUDE.md |
+| **U** | ultracode-equivalent: `ultra.agents` + `ultra.verifiers` priced at S·refEffort with `ultra.ctxTok` CLAUDE.md, as unbounded agents (full prefix, read factor 4, turn cap 80) |
 | **P** | Σ units (primary + one inspector call if `check` has `quote` or vec is B2 + planned re-derivation) + expected × V3-cell verifiers + sweep rounds × sweep-cell + (deep only: 1 completeness critic on W·min(high,refEffort)) |
 | **R** | reserve = Σ_fb rerouteRate·repair(fb), floored at the largest single repair, capped at reserveCapPct·P (the floor wins); the largest B2 repair is earmarked |
 | **C** | crew ceiling = ceilingMult·U, or 0.8·U with `parityBound`, or `caps.ceilingUsd` (user) |
 
 Pricing basis for P's non-unit terms: verifiers are priced on the `V3` cell at
 `ultra.inAvg·verifierInFrac`, the sweep cell at `ultra.inAvg`, and the critic at
-`ultra.inAvg·verifierInFrac` — all three with 0 CLAUDE.md context. The inspector call is
+`ultra.inAvg·verifierInFrac` — all three with 0 CLAUDE.md context on the lean prefix,
+the verifiers on the skeptic cap (12) and the sweep/critic on the worker cap (30). The
+planned verification spend is reported as `verifyUsd`. The inspector call is
 priced once per unit regardless of how many inspector calls that unit's run ends up
 making (see "Inspector" below).
 
-Runtime: every launch commits its estimate. Work/inspect/verify/sweep draw from the
-work pool `C − R`; re-routes and promotion deltas draw from `R` (non-B2 units cannot
-touch the B2 earmark). A refused launch has a different effect per kind: a unit's
+Runtime: every launch commits its estimate, from one of three pools:
+
+| Pool | Size | Draws |
+|---|---|---|
+| work | `C − R − verifyUsd` | units, infra retries, capacity slices, inspectors, sweeps, the critic, promoted launches (their primary estimate) |
+| verification reserve | `verifyUsd` | verifier batches first; once it is spent they draw from the work pool |
+| re-route reserve | `R` | re-routes and promotion deltas (non-B2 units cannot touch the B2 earmark) |
+
+A promoted launch must pass **both** checks (the delta against `R`, the primary estimate
+against the work pool and the kill switch); if either refuses, the unit runs on `p`
+through the normal check. A refused launch has a different effect per kind: a unit's
 primary/infra-retry/re-route attempt → that unit `UNVERIFIED` with reason `budget`; a
 verifier batch → those claims `UNVERIFIED` and dropped; an inspector call → recorded
 `skipped`, no quote signal, the unit can still finish `ok`; a capacity slice → skipped
-silently, its files listed as `uncovered`; a sweep round or the critic → dropped. Kill
-switch: no new launch once measured output since start exceeds 75 % of
-`maxOutputTokens` (default 1.5× planned output). With a native `+Nk` budget, no new
-launch below 25 % remaining. Pause: `P > pauseUsd`, not `confirmed`, and stage is not
-`'verify'` → returns the card unstarted (`reason: 'pause'`, plus a `note`).
+silently, its files listed as `uncovered`; a sweep round or the critic → dropped.
+
+**Kill switch:** once measured output since start exceeds 75 % of `maxOutputTokens`
+(default 1.5× planned output), no **new work** launches. It never refuses a verifier
+batch: verification of claims already produced draws from its reserve, then from what
+is left of the work pool. With a native `+Nk` budget, nothing launches below 25 %
+remaining (verification included). Pause: `P > pauseUsd`, not `confirmed`, and stage is
+not `'verify'` → returns the card unstarted (`reason: 'pause'`, plus a `note`).
+
+If claims still come back UNVERIFIED `budget`, the master does not re-verify them by hand:
+it runs `stage: 'verify'` with those `claims` and `carry`.
 
 ## Per-unit flow and the four failure classes
 
@@ -183,7 +211,7 @@ launch below 25 % remaining. Pause: `P > pauseUsd`, not `confirmed`, and stage i
 
 | Class | Signal | Action |
 |---|---|---|
-| infra | null result / API error | 1 retry on `p` without agentType; then UNVERIFIED `infra` |
+| infra | null result / API error | 1 retry on `p`: it keeps the agent type if that type already answered once in this run (so its turn cap and lean prefix still apply); a type never seen working is dropped (a missing plugin agent) and the retry runs on the default subagent; then UNVERIFIED `infra` |
 | capacity | scope files missing from `files_read`, or `status:'partial'` with `remaining[]` | 1 run on `p` for the missing slice only; a second shortfall lists the files as uncovered |
 | brief | `blocked`: `no_access` / `ambiguous_brief` / `out_of_scope` | no rerun → master |
 | capability | quotes resolve <70 %; a cited file not in `files_read`; a B2 finding without evidence; `blocked`: `too_hard` / `contradictory_evidence` / **no `blocked_reason` at all**; tie-out mismatch; confidence <0.5 **and** a soft signal (70–90 % resolve, or ≥3 assumptions) | run `fb` once (mode below), re-check once; fail → UNVERIFIED |
@@ -237,6 +265,25 @@ REFUTED without a `counter_quote {file, line, quote}` is downgraded to PLAUSIBLE
 `UNVERIFIABLE` from a skeptic becomes UNVERIFIED. The V2 cell is not checked by the
 `verify:` rails (only V3/V4 are).
 
+## Unit prompt
+
+Every unit prompt is `shared` preamble → unit header and brief → `Scope:` file list →
+the fixed rules → the budget lines → (numbers rules) → (mode text) → the cost tag. The
+budget lines, for a unit with planned turns N on an agent with cap CAP:
+
+```
+- Budget: about N tool calls (hard stop at CAP). Find before you read: grep or glob first,
+  then Read only the line ranges you need (offset/limit), not whole files; leave Scope only
+  to resolve a reference. Keep your last 2 calls for the answer; if the budget runs out,
+  return status "partial" with remaining[] instead of continuing.
+- Cite every file path exactly as it is written under Scope.
+```
+
+A `partial` with `remaining[]` is a capacity signal: one slice run on `p` covers the rest.
+Inspector items are mapped onto the unit's scope files before the check (exact match,
+then a unique suffix match), so a worker citing `fanout.js` for the scoped
+`plugins/x/workflows/fanout.js` is still resolved.
+
 ## RESULT
 
 ```js
@@ -246,7 +293,8 @@ REFUTED without a `counter_quote {file, line, quote}` is downgraded to PLAUSIBLE
               confirmed, plausible, refuted, unverifiedClaims, pending },
     exceptions: [{ id, cls, reason, cell, why }],     // every non-ok unit
     top: [{ cid, unit, severity, title, verdict, file, line }],
-    money: { U, P, R, C, parityBound, committedUsd, rerouteUsd, outputTokens, note },
+    money: { U, P, R, C, parityBound, committedUsd, rerouteUsd, verifyUsd, outputTokens, note },
+    //  committedUsd includes verification spend; verifyUsd = the part drawn by verifiers
     warnings: [], dropped: [{ what, count, reason }],
     invariants: [{ name, ok, lhs, rhs, diffCents }],
     critic: [ /* deep only: what is missing */ ] },

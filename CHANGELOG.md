@@ -1,5 +1,79 @@
 # Changelog
 
+## dynamic-fanout 0.1.1 — 2026-10-10
+
+The first real run (a large review of an LLM ticket bot, then 5 implementation themes)
+cost about **$376**. The review crew cost **$58.58 against a $20.62 estimate** because
+agents ran unbounded. Measured on 119 agents:
+- 28–65 turns per agent;
+- context grew to 2.4–5.6× the planned reading (whole files, wandering);
+- CLAUDE.md-kept agents started at ~85k tokens and re-read it every turn;
+- the output-token kill switch then cut verification (quality loss, no saving);
+- implementation had no envelope (~$226 over 9 launches);
+- routing collapsed to opus·high/xhigh (split by subsystem, and "high" fired on any
+  deployed code), so every `fb` was null;
+- the master's own ~$78 was mostly long-context re-reads in one 27-hour session.
+
+Fits from those agents: allowlisted crew agents start at ~6–8k tokens, full-tool agents
+at ~15k before CLAUDE.md; unbounded turns ≈ 10 + in/2.5k at high effort; output ≈ 1.5k
+tokens per turn at high. Re-pricing the real review's exact cards with 0.1.1 gives
+U $119.38 and P $44.08 (agents capped), against $58.58 actually spent unbounded.
+
+### Fixed
+- **False 0 % quote resolution.** A worker citing `fanout.js` for the scoped
+  `…/workflows/fanout.js` made the inspector miss every quote and forced a re-route.
+  Evidence paths are now mapped onto the unit's scope files (exact, then a unique suffix
+  match) before the inspector runs, and every prompt says "cite every file path exactly
+  as written under Scope".
+- **Promoted launches skipped the budget check.** A cohort-promoted unit now passes the
+  work-pool and kill-switch check for its primary estimate as well as the reserve check
+  for the delta; if either refuses, it runs on `p` through the normal check.
+- **Overestimated lean prefix.** 0.1.0 priced every agent at a 40k prefix (from an
+  MCP-heavy smoke run). Allowlisted agents measure ~6–8k: `baseCtxLean` 8000 for
+  `worker`/`skeptic`/`inspector`, `baseCtx` 15000 for full-tool types.
+- **The kill switch cut verification.** It now stops new work only. Planned verification
+  is held out of the work pool (`workPool = C − R − verifyUsd`) and draws from that
+  reserve first, then the work pool.
+- **Infra retries lost the agent type.** A retry keeps a plugin agent type that already
+  answered in this run, so its turn cap and lean prefix still apply; only a type never
+  seen working is dropped (a missing plugin agent).
+
+### Changed
+- **Turn-aware price model:** `estUsd = [(prefix + g·in)·pin·1.25 + turns·(prefix +
+  g·in/2)·pin·0.1 + turns·outPerTurn·pout] / 1e6 · scale`, with turns = min(cap,
+  round((10 + in/2500)·effortTurns)), effortTurns low .6 / medium .8 / high 1 / xhigh 1.3 /
+  max 1.6, outPerTurn 600 / 1000 / 1500 / 1800 / 2200 (haiku 500), crew read factor g = 3.
+  Replaces `turns` 12, `outByEffort` and `haikuOut`.
+- **U is priced as unbounded ultracode agents** (full prefix + `ctxTok`, read factor 4,
+  turn cap 80), so the 0.5·U crew ceiling compares like with like.
+- **Turn caps per agent type** (= `maxTurns`): worker 30, worker-mcp 35, worker-ctx 30,
+  implementer 60, skeptic 12, inspector 6. The type follows `typeKey`: implement →
+  implementer; `ctx:keep` → worker-ctx; vector T2 → worker-mcp; else worker.
+- **Parity no longer requires `ctx:'keep'`.** The rail checks only the session cell
+  S·E_ref and `fb: null`; the recommended form is `ctx:'omit'` with a rules capsule and
+  `path:line` pointers into the relevant CLAUDE.md sections.
+- **Effort rule:** `high` only for D2 ∧ V≤1 ∧ B2. B1 units start at W·medium with `fb`
+  W·high, so the one re-route exists.
+- **Docs:** decomposition by work type (judgement vs inventory, consistency, mapping,
+  extraction) in `routing.md`; packing limits expressed as turns under the cap instead of
+  ~120k reading; the calibration card, worked envelopes and run card re-priced.
+
+### Added
+- **Turn budget in every unit prompt:** "about N tool calls (hard stop at CAP)",
+  find-before-read (grep/glob first, Read line ranges with offset/limit, leave Scope only
+  to resolve a reference), keep the last 2 calls for the answer, return `partial` with
+  `remaining[]` when the budget runs out. The dry-run card shows each unit's `turns`.
+- **Routing warning:** `routing: X% of planned work-unit spend runs on <S>; split
+  mechanical work (inventory, consistency, mapping, extraction) into sonnet units`, for
+  review/research with ≥3 units and a share above 70 %.
+- **`calib.scale`**, a self-calibration multiplier (default 1): close passes `--ledger`
+  to `stats update`, and the `CALIB` line from `stats --summary` goes back in as
+  `args.calib`.
+- **Implementation envelope** (`playbooks/implement.md`): dry-run price each pass, theme
+  budget = estimate × 1.5, at most 2 passes + 1 diff review per theme then ask,
+  `ledger-cost` after each pass, a fresh session per theme.
+- `digest.money.verifyUsd`: the part of the committed spend drawn by verifiers.
+
 ## dynamic-fanout 0.1.0 — 2026-10-09
 
 The first release of a lean, master-routed replacement for ultracode's agent fan-out.
