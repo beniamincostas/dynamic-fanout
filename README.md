@@ -23,6 +23,19 @@ A deterministic foreman workflow enforces the cards:
 
 Code never picks a model or an effort.
 
+### 0.1.2: per-role calibration
+
+A validation run on 0.1.1 (8 review units) cost $21.59 total against a $15.29 crew
+estimate, but not evenly: workers ran 1.66× over, while skeptics (0.40×) and inspectors
+(0.72×) ran under. A single global `scale` would have corrected that by pricing
+verification roughly 4× too high. 0.1.2 calibrates **per role** instead
+(`scaleByRole: {work, verify, inspect}`, learned from `stats.mjs` the same way `scale`
+was), raises `readFactor` to 4 (context still grew ~5× the planned reading), and makes
+`medium` default to `V1` (a grounded quote, no skeptic) with verification sized to the
+blocker/high findings a run actually expects rather than a flat fraction of unit count.
+Details: `CHANGELOG.md` and
+`plugins/dynamic-fanout/skills/dynamic-fanout/references/economics.md`.
+
 ### 0.1.1: bounded agents
 
 The first real run (a large review of an LLM ticket bot, then 5 implementation themes)

@@ -1,5 +1,69 @@
 # Changelog
 
+## dynamic-fanout 0.1.2 — 2026-10-10
+
+Validation run on 0.1.1 (a review, 8 units, 69 findings: 7 high / 34 medium): the plan
+estimated $15.29 for the crew, the crew actually spent **$19.89** (**$21.59** total with
+the master), 0/25 agents over their turn cap. By role, estimate vs actual: **workers
+$10.42 → $17.29** (ratio 1.66 at `readFactor` 3 — context still grew ~5× the planned
+reading within ≤30 turns even though every agent was turn-capped), **skeptics $3.31 →
+$1.31** (0.40), **inspectors $1.77 → $1.28** (0.72). Sonnet cost $7.26, Opus $12.63. Only
+6 of the 69 findings got verified, because the master planned 4 verifier batches and
+`topK: 8` while the 1.3× work overrun drained the pool before verification ran. A
+separate verify-only pass of those 4 highs cost **$0.63 against a $3.31 estimate**
+(ratio 0.19) and confirmed all 4. A single global `calib.scale` (1.28, the blend of
+these) would have priced skeptics **~4× too expensive** and workers barely corrected —
+the error is per-role, not global.
+
+### Fixed
+- **One global `calib.scale` mis-prices every role in the same direction.** Workers ran
+  over, skeptics and inspectors ran under; blending them into one multiplier punished
+  verification (already starved) to compensate for work overruns it didn't cause.
+- **Verification reserve drained by `topK`, not risk.** With `medium` defaulting to `V2`,
+  a review with ~4 mediums/unit put far more claims through a skeptic than `expected`
+  ever reserved for, so `topK` — not severity — decided what got checked.
+
+### Changed
+- **Per-role calibration supersedes the single `calib.scale`.** `DEFAULT_CALIB.scaleByRole
+  = { work: 1.3, verify: 0.3, inspect: 0.7 }`, seeded from the ratios above; `estUsd`
+  multiplies by `scaleByRole[role]` (work/verify/inspect, from each agent type's
+  `ROLE_OF`) and then by the now-neutral global `scale`. `stats.mjs` learns
+  `scaleByRole` the same way it learned `scale`: `--ledger <ledger-cost.mjs --json>`
+  compares each role's actual (its `byKind` totals: work pulls in `sweep`+`critic`) to
+  its estimate, clamps the ratio to [0.1, 10], multiplies by the `scaleByRole` the run
+  actually priced with (`card.calib.scaleByRole`) to get that observation's target, and
+  folds it into `stats.calib.scaleByRole[role]` as an EWMA (α 0.5). The first per-role
+  write parks the old global value at `calib.legacyScale` and resets `calib.scale` to 1
+  (its neutral value); a `--ledger` file with no `byKind` still drives the old global
+  path unchanged. `stats --summary` now prints `CALIB {"scaleByRole":{...}}` (the plain
+  `"scale"` included only when it differs from 1), and the card records the factors it
+  was priced with as `card.calib: {scale, scaleByRole}` so `stats.mjs` can compare like
+  with like.
+- **`readFactor` 3 → 4.** Even turn-capped agents with a targeted-reading prompt grew
+  their context to ~4–5× the planned reading; workers alone still ran 1.66× over
+  estimate at `readFactor` 3. The ultracode-equivalent `ultraReadFactor` was already 4.
+- **`medium` defaults to `V1`, not `V2`.** A grounded, inspector-checked quote is the
+  default bar for a medium finding; it no longer spends a skeptic call by default. Raise
+  a medium to `V2` explicitly — via `verify.rungs.medium` or a `V2` token in that unit's
+  `check` — when those findings matter enough to verify. Measured: ~4 mediums per unit,
+  so `V2` on all of them let `topK` decide verification coverage instead of severity.
+- **Verification sizing is risk-weighted, not a flat `ceil(n/k)`.** `verify.expected`
+  (when the master omits it) is now `highs + mediums`: `highs = ceil(nUnits ×
+  highsPerUnit / batch)` (every expected high is checked — highs are exempt from
+  `topK`); `mediums = ceil(min(nUnits × mediumsPerUnit, topK) / batch)`, and only when
+  `verify.rungs.medium` is `V2` or above (0 at the new `V1` default). New calibration
+  constants `highsPerUnit: 0.9`, `mediumsPerUnit: 4`, measured on the same review (7
+  high + 34 medium from 8 units). `topKExempt` likewise now exempts any claim whose
+  severity is high/blocker **and** whose rung is V3+, not only parity claims.
+- **Reading budget is now a number, not just a turn count.** Every unit prompt adds
+  `Reading budget: about <in/12> lines in total (~<in> tokens); each Read at most ~250
+  lines`, alongside the existing tool-call budget — a turn cap bounds calls, not how much
+  of a file one `Read` pulls in.
+- **The card records its own pricing factors.** `buildCard` adds `calib: {scale,
+  scaleByRole}`, the exact numbers that run's estimates used, so a later `stats.mjs
+  update --ledger` compares that run's actual against what it was *actually* priced
+  with, not against whatever the default happens to be when `stats` runs.
+
 ## dynamic-fanout 0.1.1 — 2026-10-10
 
 The first real run (a large review of an LLM ticket bot, then 5 implementation themes)

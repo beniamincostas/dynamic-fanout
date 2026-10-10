@@ -158,9 +158,11 @@ describe('integration: review run -> check-evidence -> stats', async () => {
     assert.equal(run.res.card.S, 'opus');
     assert.equal(run.res.card.session, undefined);
     const v = Object.fromEntries(run.res.results.claims.map((c) => [c.cid, c.verdict]));
+    // medium defaults to V1 (0.1.2): r1.f2 and r3.f1 are both medium, so neither reaches a
+    // skeptic — only the two highs (r1.f1, r2.f1) do, and the mock verifier confirms both.
     assert.deepEqual(v, {
-      'r1.f1': 'CONFIRMED', 'r1.f2': 'REFUTED', 'r2.f1': 'CONFIRMED',
-      'r3.f1': 'CONFIRMED', 'r3.f2': 'PLAUSIBLE', 'r4.f1': 'PLAUSIBLE', 's1.f1': 'PLAUSIBLE',
+      'r1.f1': 'CONFIRMED', 'r1.f2': 'PLAUSIBLE', 'r2.f1': 'CONFIRMED',
+      'r3.f1': 'PLAUSIBLE', 'r3.f2': 'PLAUSIBLE', 'r4.f1': 'PLAUSIBLE', 's1.f1': 'PLAUSIBLE',
     });
   });
 
@@ -169,15 +171,17 @@ describe('integration: review run -> check-evidence -> stats', async () => {
     assert.equal(r.claims, 7);
     assert.equal(r.quotes, 7);
     assert.equal(r.resolved, 5);
-    assert.equal(r.counterQuotes, 1);
-    assert.equal(r.counterResolved, 1);
+    // no claim went to a skeptic as REFUTED (both mediums stayed at the V1 default), so
+    // there is no counter_quote to audit.
+    assert.equal(r.counterQuotes, 0);
+    assert.equal(r.counterResolved, 0);
     assert.deepEqual(r.downgrades.map((d) => [d.cid, d.from, d.to, d.reason]), [
-      ['r3.f1', 'CONFIRMED', 'UNVERIFIED', 'evidence'],
+      ['r3.f1', 'PLAUSIBLE', 'UNVERIFIED', 'evidence'],
       ['r3.f2', 'PLAUSIBLE', 'UNVERIFIED', 'evidence'],
     ]);
     const drifted = r.items.find((i) => i.cid === 'r3.f2').evidence[0];
     assert.equal(drifted.foundAt, 8);
-    assert.match(out.auditText, /r3\.f1: CONFIRMED -> UNVERIFIED \(evidence\)/);
+    assert.match(out.auditText, /r3\.f1: PLAUSIBLE -> UNVERIFIED \(evidence\)/);
   });
 
   test('--write keeps the wrapper, patches claims, top[] and counts, never raises a verdict', () => {
@@ -189,13 +193,17 @@ describe('integration: review run -> check-evidence -> stats', async () => {
     const c = a.result.digest.counts;
     const k = (v) => claims.filter((x) => x.verdict === v).length;
     assert.deepEqual([c.confirmed, c.plausible, c.refuted, c.unverifiedClaims], [k('CONFIRMED'), k('PLAUSIBLE'), k('REFUTED'), k('UNVERIFIED')]);
-    assert.deepEqual([c.confirmed, c.plausible, c.refuted, c.unverifiedClaims], [2, 2, 1, 2]);
+    // 2 CONFIRMED (the highs r1.f1/r2.f1), 3 PLAUSIBLE (r1.f2, r4.f1, s1.f1 at the medium/low
+    // default), 0 REFUTED, 2 UNVERIFIED (r3.f1/r3.f2, downgraded by check-evidence).
+    assert.deepEqual([c.confirmed, c.plausible, c.refuted, c.unverifiedClaims], [2, 3, 0, 2]);
     for (const t of a.result.digest.top) assert.equal(t.verdict, claims.find((x) => x.cid === t.cid).verdict);
     const r3 = claims.find((x) => x.cid === 'r3.f1');
-    assert.equal(r3.verdictBeforeAudit, 'CONFIRMED');
+    // r3.f1 is medium, so it never reached a skeptic (V1 default): its pre-audit verdict is
+    // the V1 grounded-quote PLAUSIBLE, not a skeptic's CONFIRMED.
+    assert.equal(r3.verdictBeforeAudit, 'PLAUSIBLE');
     assert.equal(r3.verdictBy, 'check-evidence');
     assert.equal(r3.verdictByBeforeAudit, run.res.results.claims.find((x) => x.cid === 'r3.f1').verdictBy);
-    assert.equal(r3.reasonBeforeAudit, 'read it');
+    assert.equal(r3.reasonBeforeAudit, 'grounded quotes; not independently judged');
     assert.equal(r3.reason, 'check-evidence: src/payments.py:3 quote not found');
     assert.equal(claims.find((x) => x.cid === 'r3.f2').reason, 'check-evidence: src/payments.py:12 quote not at the cited line (it is at line 8)');
     assert.equal(a.result.evidenceAudit.downgrades.length, 2);
@@ -209,10 +217,13 @@ describe('integration: review run -> check-evidence -> stats', async () => {
       'review/review/D2V1B1T1/sonnet·medium/omit',
     ]);
     const main = out.stats.cohorts['review/review/D2V1B1T1/sonnet·medium/omit'];
-    assert.deepEqual([main.n, main.firstPassOk, main.refutedLater, main.rerouted, main.unverified], [3, 1, 1, 1, 0]);
+    // r1 and r4 are firstPassOk (no claim of theirs was REFUTED or check-evidence-downgraded
+    // at the V1 medium default); r2 is rerouted.
+    assert.deepEqual([main.n, main.firstPassOk, main.refutedLater, main.rerouted, main.unverified], [3, 2, 0, 1, 0]);
     assert.deepEqual(main.fb, { 'opus·high': 3 });
-    // r2's confidence is the fallback's, not p's: it must not feed p's confidence split
-    assert.deepEqual(main.conf, { hi: { n: 2, ok: 1 }, lo: { n: 0, ok: 0 } });
+    // r2's confidence is the fallback's, not p's: it must not feed p's confidence split.
+    // r1 and r4 are both hi-confidence (0.9) and both firstPassOk.
+    assert.deepEqual(main.conf, { hi: { n: 2, ok: 2 }, lo: { n: 0, ok: 0 } });
     const set = out.stats.cohorts['review/review/D1V2B1T1/sonnet·low/omit'];
     assert.deepEqual(set.fb, { 'sonnet·medium': 1 });
     assert.equal(set.n, 1);
@@ -225,7 +236,7 @@ describe('integration: review run -> check-evidence -> stats', async () => {
   });
 
   test('stats --summary prints the cohort; a second update of the same run is skipped', () => {
-    assert.match(out.summary, /review\/D2V1B1T1\/sonnet·medium\/omit {2}n=3 {2}33% {2}33%/);
+    assert.match(out.summary, /review\/D2V1B1T1\/sonnet·medium\/omit {2}n=3 {2}67% {2}33%/);
     assert.ok(!/\/opus\/omit/.test(out.summary), 'no cell collapsed to the bare session model');
     const again = cli('stats.mjs', ['update', `${out.outFile}.audited.json`, '--file', out.statsFile, '--kind', 'review']);
     assert.match(again.stdout, /already recorded/);
@@ -386,6 +397,9 @@ describe('integration: refused units and a verify-only stage', async () => {
     const a = reviewArgs();
     a.units = [a.units[0], a.units[3]]; // r1 and r4, same cell
     a.sweep = { rounds: 0 };
+    // the merged finding is medium severity; raise it to V2 so it still reaches a skeptic
+    // under the 0.1.2 default (medium -> V1, no skeptic).
+    a.verify = { rungs: { medium: 'V2' }, cells: { V3: { effort: 'high' } } };
     const same = finding('apply_discount accepts a discount above 100%', 'medium', [ev('src/invoice.py', 13, 'if pct > 100:')]);
     const resp = (prompt) => {
       const tag = tagOf(prompt);

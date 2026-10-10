@@ -207,12 +207,13 @@ test('estUsd: turn-aware formula, lean vs full prefix, caps, scale', () => {
   assert.equal(core.turnsFor({ model: 'opus', effort: 'high' }, 50000, K), 30)
   assert.equal(core.turnsFor({ model: 'opus', effort: 'high' }, 100000, K, 30), 30)
   assert.equal(core.turnsFor({ model: 'opus', effort: 'medium' }, 50000, K), 24)
-  // lean opus·high, 50k read, capped at 30 turns: write (8k + 3·50k)·4·1.25 + read 30·(8k + 75k)·4·0.1 + out 30·1500·20
-  const want = round((158000 * 4 * 1.25 + 30 * 83000 * 4 * 0.1 + 30 * 1500 * 20) / 1e6)
+  // lean opus·high, 50k read, capped at 30 turns, no role: write (8k + 4·50k)·4·1.25 + read 30·(8k + 100k)·4·0.1 + out 30·1500·20
+  assert.equal(K.readFactor, 4)
+  const want = round((208000 * 4 * 1.25 + 30 * 108000 * 4 * 0.1 + 30 * 1500 * 20) / 1e6)
   assert.equal(core.estUsd({ model: 'opus', effort: 'high' }, 50000, 0, K, { lean: true, cap: 30 }), want)
   // the full prefix + CLAUDE.md costs more than lean for the same work
   const full = core.estUsd({ model: 'opus', effort: 'high' }, 50000, 78000, K, { lean: false, cap: 30 })
-  assert.ok(full > want * 1.5, `${full} vs ${want}`)
+  assert.ok(full > want * 1.4, `${full} vs ${want}`)
   // calib.scale multiplies every estimate
   assert.equal(core.estUsd({ model: 'opus', effort: 'high' }, 50000, 0, core.calibrate({ scale: 2 }), { lean: true, cap: 30 }), round(want * 2))
   // haiku: no effort, fixed small output per turn
@@ -226,7 +227,7 @@ test('price: ultracode baseline is unbounded (full prefix, CLAUDE.md, roaming) v
   const V = core.validate(a)
   const M = core.price(a, V, K)
   const ref = { model: 'opus', effort: 'xhigh' }
-  const ultraO = { lean: false, cap: K.ultraTurnCap, readFactor: K.ultraReadFactor }
+  const ultraO = { lean: false, cap: K.ultraTurnCap, readFactor: K.ultraReadFactor, role: 'work' }
   assert.equal(M.U, round(6 * core.estUsd(ref, 40000, 30000, K, ultraO) + 2 * core.estUsd(ref, 20000, 30000, K, ultraO)))
   assert.equal(M.C, round(0.5 * M.U))
   assert.ok(M.verifyUsd > 0)
@@ -345,7 +346,7 @@ test('capability failure then success: ok-rerouted, claims bumped one rung', asy
   }))
   assert.equal(res.ledger.units.find(l => l.id === 'u1').outcome, 'ok-rerouted')
   const claim = res.results.claims.find(c => c.unit === 'u1')
-  assert.equal(claim.rung, 'V3', 'medium (V2) + 1 for the re-route')
+  assert.equal(claim.rung, 'V2', 'medium (V1) + 1 for the re-route')
   const repair = calls.find(c => tagOf(c.prompt) === 'u1:2')
   assert.match(repair.prompt, /Fresh attempt|Repair/)
 })
@@ -453,7 +454,7 @@ test('kill switch: no new launch once output passes 75 % of maxOutputTokens', as
 // ───────────────────────── verification ─────────────────────────
 
 test('verification: rungs, cells, topK, refuted-without-counter-quote', async () => {
-  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, topK: 2, batch: 5 } })
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' }, topK: 2, batch: 5 } })
   a.units[0].vec = 'D2 A1 T1 C1 V0 B2 G1'
   a.units[0].p = { effort: 'xhigh' }
   a.units[0].ctx = 'keep'
@@ -668,4 +669,111 @@ test('routing warning when most planned spend sits on the session model', async 
   a.ultra = { ...a.ultra, agents: 12 }
   const { res } = await runFanout(a, responder())
   assert.ok(res.warnings.some(w => /^routing: \d+% of planned work-unit spend runs on opus/.test(w)), res.warnings.join(' | '))
+})
+
+// ───────────────────────── 0.1.2 ─────────────────────────
+
+const near = (x, y, msg) => assert.ok(Math.abs(x - y) <= 1.5e-4, `${msg || ''} ${x} vs ${y}`)
+
+test('per-role calibration: agentOpts carries the role; estimates scale by role × global scale', () => {
+  const K = core.calibrate()
+  assert.deepEqual(K.scaleByRole, { work: 1.3, verify: 0.3, inspect: 0.7 })
+  assert.equal(K.scale, 1)
+  for (const k of ['implementer', 'worker', 'workerMcp', 'workerCtx']) assert.equal(core.agentOpts(k, K).role, 'work', k)
+  assert.equal(core.agentOpts('skeptic', K).role, 'verify')
+  assert.equal(core.agentOpts('inspector', K).role, 'inspect')
+  const cell = { model: 'opus', effort: 'high' }
+  const base = key => { const o = core.agentOpts(key, K); return core.estUsd(cell, 40000, 0, K, { lean: o.lean, cap: o.cap }) }
+  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('skeptic', K)), base('skeptic') * 0.3, 'skeptic')
+  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('inspector', K)), base('inspector') * 0.7, 'inspector')
+  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('worker', K)), base('worker') * 1.3, 'worker')
+  // the global scale stays an extra multiplier on top of the role factor
+  const K2 = core.calibrate({ scale: 2 })
+  near(core.estUsd(cell, 40000, 0, K2, core.agentOpts('skeptic', K2)), base('skeptic') * 0.3 * 2, 'skeptic × scale')
+  // the verification reserve is priced on the skeptic role
+  const a = baseArgs()
+  const V = core.validate(a)
+  const M = core.price(a, V, K)
+  assert.equal(M.verifyUsd, round(M.expected * core.estUsd(V.V3, 40000 * K.verifierInFrac, 0, K, core.agentOpts('skeptic', K))))
+})
+
+test('calibrate merges scaleByRole like the other object fields', () => {
+  const K = core.calibrate({ scaleByRole: { verify: 0.5 }, scale: 1.2, highsPerUnit: 2 })
+  assert.deepEqual(K.scaleByRole, { work: 1.3, verify: 0.5, inspect: 0.7 })
+  assert.equal(K.scale, 1.2)
+  assert.equal(K.highsPerUnit, 2)
+  assert.equal(K.mediumsPerUnit, 4)
+  assert.deepEqual(core.calibrate().scaleByRole, { work: 1.3, verify: 0.3, inspect: 0.7 }, 'defaults are not mutated')
+})
+
+test('the priced card carries the calibration factors it used', async () => {
+  let { res } = await runFanout(baseArgs({ dryRun: true }), responder())
+  assert.deepEqual(res.card.calib, { scale: 1, scaleByRole: { work: 1.3, verify: 0.3, inspect: 0.7 } })
+  ;({ res } = await runFanout(baseArgs({ dryRun: true, calib: { scale: 1.5, scaleByRole: { verify: 0.2 } } }), responder()))
+  assert.deepEqual(res.card.calib, { scale: 1.5, scaleByRole: { work: 1.3, verify: 0.2, inspect: 0.7 } })
+})
+
+test('medium defaults to rung V1: grounded, no skeptic launched', async () => {
+  assert.equal(core.DEFAULT_RUNGS.medium, 'V1')
+  assert.equal(core.validate(baseArgs()).rungs.medium, 'V1')
+  assert.equal(core.rungFor({ severity: 'medium' }, core.DEFAULT_RUNGS), 'V1')
+  assert.equal(core.rungFor({ severity: 'high' }, core.DEFAULT_RUNGS), 'V3')
+  const { res, calls } = await runFanout(baseArgs(), responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'medium', 'mid')] }),
+  }))
+  const c = res.results.claims.find(x => x.title === 'mid')
+  assert.equal(c.rung, 'V1')
+  assert.equal(c.verdict, 'PLAUSIBLE')
+  assert.equal(c.verdictBy, 'V1')
+  assert.equal(calls.filter(x => tagOf(x.prompt).startsWith('v:')).length, 0)
+})
+
+test('blocker/high claims are exempt from topK; topK bounds only the remaining V2+ claims', async () => {
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' }, topK: 1 } })
+  const { res } = await runFanout(a, responder({
+    'u2:1': okUnit({ files_read: ['src/b.py'], findings: [
+      finding('src/b.py', 10, 'high', 'h1'), finding('src/b.py', 50, 'high', 'h2'), finding('src/b.py', 90, 'blocker', 'h3'),
+      finding('src/b.py', 130, 'medium', 'm1'), finding('src/b.py', 170, 'medium', 'm2'),
+    ] }),
+  }))
+  const by = t => res.results.claims.find(c => c.title === t)
+  for (const t of ['h1', 'h2', 'h3']) {
+    assert.notEqual(by(t).verdictBy, 'topK', `${t} must not be dropped by topK`)
+    assert.equal(by(t).verdict, 'CONFIRMED', t)
+  }
+  assert.deepEqual(res.results.claims.filter(c => c.verdictBy === 'topK').map(c => c.title), ['m2'])
+  // pure rule
+  assert.equal(core.topKExempt({ severity: 'high' }, core.DEFAULT_RUNGS), true)
+  assert.equal(core.topKExempt({ severity: 'medium', bump: 2 }, core.DEFAULT_RUNGS), false)
+  assert.equal(core.topKExempt({ severity: 'low', parity: true }, core.DEFAULT_RUNGS), true)
+  assert.equal(core.topKExempt({ severity: 'high' }, { ...core.DEFAULT_RUNGS, high: 'V2' }), false, 'a master who lowers high to V2 opts out')
+})
+
+test('price: expected verifier batches follow the expected findings', () => {
+  const K = core.calibrate()
+  const R = core.DEFAULT_RUNGS
+  // 8 units, standard (batch 3, topK 12): ceil(8·0.9/3) = 3 batches for highs, mediums at V1 → 0
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, R, K), 3)
+  // medium at V2: + ceil(min(8·4, 12)/3) = 4
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V2' }, K), 7)
+  // explicit batch and topK
+  assert.equal(core.expectedVerifiers(8, 'standard', { batch: 5, topK: 8 }, { ...R, medium: 'V3' }, K), 2 + 2)
+  // quick depth: batch 5, topK 6
+  assert.equal(core.expectedVerifiers(4, 'quick', {}, { ...R, medium: 'V2' }, K), 1 + 2)
+  // price() uses it when verify.expected is absent, and honours an explicit one
+  const a = baseArgs()
+  assert.equal(core.price(a, core.validate(a), K).expected, Math.ceil(2 * 0.9 / 3))
+  const b = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' } } })
+  assert.equal(core.price(b, core.validate(b), K).expected, 1 + Math.ceil(Math.min(2 * 4, 12) / 3))
+  const c = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, expected: 5 } })
+  assert.equal(core.price(c, core.validate(c), K).expected, 5)
+})
+
+test('every unit prompt carries a numeric reading budget', async () => {
+  const { calls } = await runFanout(baseArgs(), responder())
+  const p = calls.find(c => tagOf(c.prompt) === 'u1:1').prompt
+  assert.match(p, /- Reading budget: about 2500 lines in total \(~30000 tokens\); each Read at most ~250 lines\./)
+  const lines = p.split('\n')
+  const i = lines.findIndex(l => l.startsWith('- Budget:'))
+  assert.match(lines[i + 1], /^- Reading budget:/, 'right after the Budget line')
 })

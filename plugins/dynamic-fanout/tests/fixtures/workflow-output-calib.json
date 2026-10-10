@@ -1,0 +1,47 @@
+{
+  "summary": "dynamic-fanout per-role calibration fixture",
+  "result": {
+    "started": true,
+    "card": {
+      "kind": "review", "depth": "standard", "S": "opus", "W": "opus", "refEffort": "xhigh", "refSource": "default",
+      "calib": { "scale": 1, "scaleByRole": { "work": 1.2, "verify": 0.8 } }
+    },
+    "digest": {
+      "counts": { "units": 2, "ok": 2, "okRerouted": 0, "okPromoted": 0, "brief": 0, "unverified": 0, "claims": 2,
+                  "confirmed": 2, "plausible": 0, "refuted": 0, "unverifiedClaims": 0 },
+      "exceptions": [], "top": [],
+      "money": { "U": 10, "P": 2.8, "R": 0, "C": 5, "parityBound": false, "committedUsd": 2.8, "rerouteUsd": 0, "outputTokens": 9000 },
+      "warnings": [], "dropped": [], "invariants": []
+    },
+    "ledger": {
+      "units": [
+        { "id": "u1", "role": "review", "vec": "D2 A1 T1 C1 V1 B1 G0", "parity": false, "p": "opus·medium", "fb": "opus·high",
+          "ctx": "omit", "check": "quote", "why": "fixture", "override": null, "outcome": "ok", "reason": null, "verifyBump": 0,
+          "attempts": [{ "n": 1, "tag": "⟦df:u1:1⟧", "cell": "opus·medium", "kind": "primary", "mode": null, "cls": "ok", "estUsd": 1.0 }] },
+        { "id": "u2", "role": "review", "vec": "D2 A1 T1 C1 V1 B1 G0", "parity": false, "p": "opus·medium", "fb": "opus·high",
+          "ctx": "omit", "check": "quote", "why": "fixture", "override": null, "outcome": "ok", "reason": null, "verifyBump": 0,
+          "attempts": [{ "n": 1, "tag": "⟦df:u2:1⟧", "cell": "opus·medium", "kind": "primary", "mode": null, "cls": "ok", "estUsd": 1.0 }] }
+      ],
+      "verifiers": [
+        { "tag": "⟦df:v:b1:1⟧", "cell": "opus·high", "rung": "V3", "claims": ["u1.f1"], "estUsd": 1.0 },
+        { "tag": "⟦df:v:b2:1⟧", "cell": "opus·high", "rung": "V3", "claims": ["u2.f1"], "estUsd": 0.5 }
+      ],
+      "inspectors": [
+        { "tag": "⟦df:i:u1:1⟧", "unit": "u1", "quotes": 2, "resolved": 2, "estUsd": 0.3 }
+      ],
+      "sweeps": [
+        { "tag": "⟦df:s:1:1⟧", "cell": "opus·medium", "round": 1, "newClaims": 0, "estUsd": 0.5 }
+      ],
+      "cells": { "opus·medium": 2, "opus·high": 2 }, "reroutes": 0, "promotions": []
+    },
+    "results": {
+      "units": { "u1": { "status": "complete", "confidence": 0.9 }, "u2": { "status": "complete", "confidence": 0.9 } },
+      "claims": [
+        { "cid": "u1.f1", "unit": "u1", "severity": "high", "title": "t1", "verdict": "CONFIRMED",
+          "evidence": [{ "file": "src/billing.py", "line": 8, "quote": "tax = round(gross_cents * tax_rate / (1 + tax_rate))" }] },
+        { "cid": "u2.f1", "unit": "u2", "severity": "high", "title": "t2", "verdict": "CONFIRMED",
+          "evidence": [{ "file": "src/billing.py", "line": 6, "quote": "return gross_cents - tax" }] }
+      ]
+    }
+  }
+}
