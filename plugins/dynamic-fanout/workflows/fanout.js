@@ -27,7 +27,9 @@ const RUNGS = ['V0', 'V1', 'V2', 'V3', 'V4']
 const FEATURES = ['D', 'A', 'T', 'C', 'V', 'B', 'G']
 const BRIEF_REASONS = ['no_access', 'ambiguous_brief', 'out_of_scope']
 const CAPABILITY_REASONS = ['too_hard', 'contradictory_evidence']
-const DEFAULT_RUNGS = { blocker: 'V3', high: 'V3', medium: 'V2', low: 'V0', info: 'V0' }
+// 0.1.2: medium drops to V1 (grounded quotes, no skeptic). Measured: a review produced ~4
+// mediums per unit, so V2 on mediums made topK — not risk — decide what got verified.
+const DEFAULT_RUNGS = { blocker: 'V3', high: 'V3', medium: 'V1', low: 'V0', info: 'V0' }
 const DEFAULT_TOPK = { quick: 6, standard: 12, deep: 25 }
 const DEFAULT_ROUNDS = { quick: 0, standard: 1, deep: 2 }
 const MAX_INSPECT_QUOTES = 40
@@ -48,13 +50,25 @@ const DEFAULT_CALIB = {
   effortTurns: { low: 0.6, medium: 0.8, high: 1.0, xhigh: 1.3, max: 1.6 },
   outPerTurn: { low: 600, medium: 1000, high: 1500, xhigh: 1800, max: 2200 },
   haikuOutPerTurn: 500,
-  readFactor: 3,
+  // 0.1.2 validation run: context still grew ~5x the planned reading when unbounded and
+  // ~4-5x even when turn-capped with a targeted-reading prompt (workers ran 1.66x over at 3).
+  readFactor: 4,
   ultraReadFactor: 4,
   ultraTurnCap: 80,
   caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
   inspectorIn: 12000,
   verifierInFrac: 0.5,
+  // Per-role multipliers from the 0.1.1 validation run (estimate -> actual): workers
+  // $10.42 -> $17.29 (1.66 at readFactor 3; ~1.3 left after readFactor 4), skeptics
+  // $3.31 -> $1.31 (0.40; 0.19 in a verify-only pass), inspectors $1.77 -> $1.28 (0.72).
+  // One global factor (1.28) would price skeptics ~4x too high and starve verification.
+  scaleByRole: { work: 1.3, verify: 0.3, inspect: 0.7 },
+  // Global extra multiplier on top of scaleByRole (self-calibration via stats.mjs).
   scale: 1,
+  // Expected findings per unit, for sizing the verification reserve. Measured: 7 high +
+  // 34 medium from 8 review units.
+  highsPerUnit: 0.9,
+  mediumsPerUnit: 4,
 }
 
 const mr = m => MODELS.indexOf(m)
@@ -70,7 +84,7 @@ function calibrate(c) {
   for (const k of Object.keys(c)) {
     if (k === 'prices' && c.prices && typeof c.prices === 'object') {
       for (const m of Object.keys(c.prices)) K.prices[m] = { ...(K.prices[m] || {}), ...c.prices[m] }
-    } else if (['effortTurns', 'outPerTurn', 'caps'].includes(k) && c[k] && typeof c[k] === 'object') {
+    } else if (['effortTurns', 'outPerTurn', 'caps', 'scaleByRole'].includes(k) && c[k] && typeof c[k] === 'object') {
       K[k] = { ...K[k], ...c[k] }
     } else if (typeof c[k] === 'number' && k in K) {
       K[k] = c[k]
@@ -150,9 +164,12 @@ function outTok(cell, K, turns) {
   return per * (turns || turnsFor(cell, 0, K))
 }
 
+const roleScale = (K, role) => (role && K.scaleByRole ? K.scaleByRole[role] : undefined) ?? 1
+
 // One agent. Its context starts at the fixed prefix (+ CLAUDE.md if kept) and grows to
 // prefix + readFactor·in as it reads; everything is written to cache once, and every turn
-// re-reads the context so far (on average half the growth). o: {lean, cap, readFactor, turns}.
+// re-reads the context so far (on average half the growth). o: {lean, cap, readFactor, turns, role};
+// the result is scaled by K.scaleByRole[role] and by the global K.scale.
 function estUsd(cell, inTok, ctxTok, K, o) {
   o = o || {}
   if (!cell) return 0
@@ -164,7 +181,7 @@ function estUsd(cell, inTok, ctxTok, K, o) {
   const last = prefix + g * (inTok || 0)
   const avg = prefix + (g * (inTok || 0)) / 2
   const usd = (last * p.in * K.cacheWrite + turns * avg * p.in * K.cacheRead + outTok(cell, K, turns) * p.out) / 1e6
-  return round4(usd * (K.scale || 1))
+  return round4(usd * roleScale(K, o.role) * (K.scale || 1))
 }
 
 // Which plugin agent a unit runs on, and that agent's hard turn cap (its maxTurns).
@@ -172,8 +189,36 @@ function typeKey(u) {
   return u.role === 'implement' ? 'implementer' : u.ctx === 'keep' ? 'workerCtx' : u.v && u.v.T === 2 ? 'workerMcp' : 'worker'
 }
 const LEAN_TYPES = ['worker', 'skeptic', 'inspector']
+const ROLE_OF = { implementer: 'work', worker: 'work', workerMcp: 'work', workerCtx: 'work', skeptic: 'verify', inspector: 'inspect' }
 function agentOpts(key, K) {
-  return { lean: LEAN_TYPES.includes(key), cap: K.caps[key] || null }
+  return { lean: LEAN_TYPES.includes(key), cap: K.caps[key] || null, role: ROLE_OF[key] || 'work' }
+}
+
+// topK and batch size of the verification stage (shared by price() and verify()).
+function verifySizing(vcfg, depth) {
+  vcfg = vcfg || {}
+  const topK = Number.isInteger(vcfg.topK) ? vcfg.topK : DEFAULT_TOPK[depth]
+  const batch = Number.isInteger(vcfg.batch) && vcfg.batch > 0 ? vcfg.batch : depth === 'quick' ? 5 : 3
+  return { topK, batch }
+}
+
+// Verifier batches to reserve when the master gives no verify.expected: every expected
+// high gets checked (highs are exempt from topK); mediums only when their rung is V2+,
+// and then at most topK of them.
+function expectedVerifiers(nUnits, depth, vcfg, rungs, K) {
+  const { topK, batch } = verifySizing(vcfg, depth)
+  const highs = Math.ceil((nUnits * K.highsPerUnit) / batch)
+  const medRung = (rungs && rungs.medium) || DEFAULT_RUNGS.medium
+  const mediums = ['V2', 'V3', 'V4'].includes(medRung) ? Math.ceil(Math.min(nUnits * K.mediumsPerUnit, topK || 0) / batch) : 0
+  return highs + mediums
+}
+
+// A claim verified at V3+ because of its severity (blocker/high) or because it is a parity
+// claim is never dropped by topK; topK only bounds the remaining V2+ claims.
+function topKExempt(c, rungs) {
+  if (c.parity) return true
+  if (sevRank(c.severity) < sevRank('high')) return false
+  return RUNGS.indexOf((rungs && rungs[c.severity]) || DEFAULT_RUNGS[c.severity]) >= 3
 }
 
 function validate(a) {
@@ -329,7 +374,7 @@ function price(a, V, K) {
   const ctxTok = Number(ultra.ctxTok) || 0
   const vIn = inAvg * K.verifierInFrac
   // Ultracode's agents: session cell, full tools, CLAUDE.md, no turn cap, unbounded reading.
-  const ultraO = { lean: false, cap: K.ultraTurnCap, readFactor: K.ultraReadFactor }
+  const ultraO = { lean: false, cap: K.ultraTurnCap, readFactor: K.ultraReadFactor, role: 'work' }
   const U = (Number(ultra.agents) || 0) * estUsd(ref, inAvg, ctxTok, K, ultraO) + (Number(ultra.verifiers) || 0) * estUsd(ref, vIn, ctxTok, K, ultraO)
   const inspO = agentOpts('inspector', K)
   const skepO = agentOpts('skeptic', K)
@@ -358,8 +403,7 @@ function price(a, V, K) {
   }
   const nUnits = V.units.length
   const vcfg = a.verify || {}
-  const expected = Number.isInteger(vcfg.expected) ? Math.max(0, vcfg.expected)
-    : a.depth === 'quick' ? Math.ceil(nUnits / 3) : a.depth === 'deep' ? nUnits : Math.ceil(nUnits / 2)
+  const expected = Number.isInteger(vcfg.expected) ? Math.max(0, vcfg.expected) : expectedVerifiers(nUnits, a.depth, vcfg, V.rungs, K)
   const verifyUsd = expected * estUsd(V.V3, vIn, 0, K, skepO)
   const sweepUsd = V.rounds * estUsd(V.sweepCell, inAvg, 0, K, workO)
   const criticUsd = a.depth === 'deep' ? estUsd(V.criticCell, vIn, 0, K, workO) : 0
@@ -410,7 +454,8 @@ function moneyRails(a, V, M) {
   if (M.plannedAgents > 25) V.warnings.push(`size: ${M.plannedAgents} planned agents (Claude Code flags workflows above 25)`)
 }
 
-function buildCard(a, V, M) {
+function buildCard(a, V, M, K) {
+  K = K || calibrate()
   return {
     kind: a.kind, depth: a.depth, stage: V.stage,
     S: V.S, W: V.W, refEffort: V.E, refSource: (a.session && a.session.refSource) || 'unknown',
@@ -426,6 +471,8 @@ function buildCard(a, V, M) {
       parityP: round2(M.parityP), parityBound: !!(a.caps && a.caps.parityBound),
     },
     plannedAgents: M.plannedAgents,
+    // the factors these estimates were priced with, so stats.mjs updates relative to them
+    calib: { scale: K.scale, scaleByRole: { ...K.scaleByRole } },
     basis: (a.ultra && a.ultra.basis) || '',
   }
 }
@@ -843,7 +890,7 @@ const K = calibrate(A.calib)
 const V = validate(A)
 const M = V.units.length && mr(V.S) >= 0 && er(V.E) >= 0 ? price(A, V, K) : null
 if (M) moneyRails(A, V, M)
-const card = M ? buildCard(A, V, M) : null
+const card = M ? buildCard(A, V, M, K) : null
 if (V.errors.length) {
   log(`plan rejected: ${V.errors.length} rail violation(s); no agent launched`)
   return { started: false, reason: 'rails', errors: V.errors, warnings: V.warnings, card }
@@ -938,6 +985,7 @@ function unitPrompt(u, attempt, mode) {
   lines.push(RULES)
   const cap = u.o && u.o.cap
   lines.push(`- Budget: about ${u.turns || 20} tool calls${cap ? ` (hard stop at ${cap})` : ''}. Find before you read: grep or glob first, then Read only the line ranges you need (offset/limit), not whole files; leave Scope only to resolve a reference. Keep your last 2 calls for the answer; if the budget runs out, return status "partial" with remaining[] instead of continuing.`)
+  if (Number(u.in) > 0) lines.push(`- Reading budget: about ${Math.round(u.in / 12)} lines in total (~${u.in} tokens); each Read at most ~250 lines.`)
   lines.push('- Cite every file path exactly as it is written under Scope.')
   if (u.n) lines.push('', NUMBER_RULES)
   if (mode) lines.push('', mode)
@@ -1194,8 +1242,7 @@ async function runBatch(b) {
 }
 
 async function verify(all) {
-  const topK = Number.isInteger(A.verify && A.verify.topK) ? A.verify.topK : DEFAULT_TOPK[A.depth]
-  const batchSize = Number.isInteger(A.verify && A.verify.batch) && A.verify.batch > 0 ? A.verify.batch : A.depth === 'quick' ? 5 : 3
+  const { topK, batch: batchSize } = verifySizing(A.verify, A.depth)
   const pending = []
   for (const c of all) {
     if (c.verdict) continue
@@ -1205,9 +1252,11 @@ async function verify(all) {
     pending.push(c)
   }
   pending.sort((x, y) => sevRank(y.severity) - sevRank(x.severity) || (y.blast || 0) - (x.blast || 0) || String(x.cid).localeCompare(String(y.cid)))
-  // Parity claims carry the >= ultracode guarantee, so topK never drops them.
-  const rest = pending.filter(c => !c.parity)
-  const chosen = [...pending.filter(c => c.parity), ...rest.slice(0, topK)]
+  // Parity claims carry the >= ultracode guarantee and blocker/high claims sit at V3 by
+  // severity: topK never drops either; it only bounds the remaining V2+ claims.
+  const exempt = pending.filter(c => topKExempt(c, V.rungs))
+  const rest = pending.filter(c => !topKExempt(c, V.rungs))
+  const chosen = [...exempt, ...rest.slice(0, topK)]
   const over = rest.slice(topK)
   for (const c of over) Object.assign(c, { verdict: 'UNVERIFIED', verdictBy: 'topK', reason: `beyond topK ${topK}` })
   if (over.length) dropped.push({ what: 'claims beyond topK', count: over.length, reason: `topK=${topK}` })

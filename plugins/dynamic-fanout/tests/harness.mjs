@@ -15,6 +15,7 @@ const CORE_NAMES = [
   'stronger', 'checksOf', 'estUsd', 'outTok', 'validate', 'price', 'moneyRails', 'buildCard', 'classify', 'toCents',
   'centsStr', 'compareNumbers', 'evalInvariants', 'dedupClaims', 'rungFor', 'mergeVerdicts', 'normalizeVerdict',
   'mergeResults', 'mergeInspections', 'modeText', 'missingFiles', 'pathMatch', 'floorOf', 'turnsFor', 'typeKey', 'agentOpts', 'toScope',
+  'verifySizing', 'expectedVerifiers', 'topKExempt', 'DEFAULT_RUNGS',
 ]
 
 export function loadCore() {

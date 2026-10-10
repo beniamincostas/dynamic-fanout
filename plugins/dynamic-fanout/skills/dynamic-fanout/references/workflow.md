@@ -54,15 +54,20 @@ envelope the implement playbook budgets against.
     schema: { ... }                      // optional JSON Schema for the free `result` field
   }],
   verify: {
-    rungs: { blocker: 'V3', high: 'V3', medium: 'V2', low: 'V0', info: 'V0' },
+    rungs: { blocker: 'V3', high: 'V3', medium: 'V1', low: 'V0', info: 'V0' },
     cells: { V3: { model?, effort }, V4: { model?, effort } },
-    //  V2 = max(producer model, sonnet)·min(medium, refEffort); default V3 = W·min(high,
-    //  refEffort); default V4 = V3 (same cell, run twice with different lenses)
+    //  medium defaults to V1 (grounded quote, no skeptic) since 0.1.2 — raise it to V2
+    //  in rungs.medium, or float a V2 token in a unit's check, when those findings
+    //  matter enough to verify; V2 = max(producer model, sonnet)·min(medium, refEffort);
+    //  default V3 = W·min(high, refEffort); default V4 = V3 (same cell, two lenses)
     topK: 12, batch: 3, expected: 6
     //  topK default: quick 6 / standard 12 / deep 25 (parity claims are never cut by it)
     //  batch default: quick 5, else 3 (claims per V2/V3 skeptic call)
-    //  expected default: quick ceil(n/3) / standard ceil(n/2) / deep n (n = unit count;
-    //  pricing only — it does not cap how many verifier calls actually run)
+    //  expected default (0.1.2, risk-weighted — see economics.md): highs + mediums, where
+    //  highs = ceil(nUnits·highsPerUnit / batch) (every expected high is checked; highs
+    //  are exempt from topK) and mediums = ceil(min(nUnits·mediumsPerUnit, topK) / batch)
+    //  but only when rungs.medium is V2 or above (0 at the V1 default); pricing only —
+    //  it does not cap how many verifier calls actually run
   },
   sweep:  { rounds: 1, cell: { model?, effort } },
   //  rounds forced to 0 unless kind is review or research; default rounds quick 0/standard
@@ -73,7 +78,9 @@ envelope the implement playbook budgets against.
   overrides: [{ id: 'u2', p: { model: 'opus', effort: 'high' }, fb: null, by: 'user' }],
   //  an override's `p` with no `fb` clears any old fallback (fb becomes null) — a
   //  re-route target needs no fb of its own; `by` is free text, any value exempts rails
-  calib: { /* optional; at least the CALIB line from stats --summary (scale), see economics.md */ },
+  calib: { /* optional; pass back the CALIB line from stats --summary (scaleByRole, or
+            legacy scale), see economics.md. The returned card always carries the
+            factors it priced with as card.calib: {scale, scaleByRole} */ },
   agentTypes: { worker, workerCtx, workerMcp, implementer, skeptic, inspector },  // optional overrides
   claims: [ /* stage 'verify' only: results.claims from the 'work' stage, unchanged */ ],
   carry:  { committedUsd: 0, rerouteUsd: 0, invariants: [] }
@@ -250,8 +257,10 @@ own floor (a `V2`/`V3`/`V4` token in its `check`, case-insensitive), raised agai
 least V3 for parity claims, capped at V4. Claims from a unit that ended `unverified` or
 `brief` are UNVERIFIED (`unit <outcome>: <reason>`) and skip verification entirely —
 they never reach a rung. Claims beyond `topK` are UNVERIFIED `topK` and listed in
-`digest.dropped`; parity claims are always verified and never count toward `topK` — the
-cut applies only to the remaining claims, sorted by severity then blast radius.
+`digest.dropped`; parity claims, and any claim whose severity is high/blocker **and**
+whose rung is V3 or above, are always verified and never count toward `topK` — the cut
+applies only to the remaining (mostly medium-rung) claims, sorted by severity then blast
+radius.
 
 | Rung | What runs | Verdict source |
 |---|---|---|
@@ -269,15 +278,22 @@ REFUTED without a `counter_quote {file, line, quote}` is downgraded to PLAUSIBLE
 
 Every unit prompt is `shared` preamble → unit header and brief → `Scope:` file list →
 the fixed rules → the budget lines → (numbers rules) → (mode text) → the cost tag. The
-budget lines, for a unit with planned turns N on an agent with cap CAP:
+budget lines, for a unit with planned turns N on an agent with cap CAP and planned
+reading `in` tokens:
 
 ```
 - Budget: about N tool calls (hard stop at CAP). Find before you read: grep or glob first,
   then Read only the line ranges you need (offset/limit), not whole files; leave Scope only
   to resolve a reference. Keep your last 2 calls for the answer; if the budget runs out,
   return status "partial" with remaining[] instead of continuing.
+- Reading budget: about <in/12> lines in total (~<in> tokens); each Read at most ~250 lines.
 - Cite every file path exactly as it is written under Scope.
 ```
+
+The reading-budget line (0.1.2) is separate from the tool-call budget: the turn cap
+bounds how many calls an agent makes, not how much of a file one `Read` call pulls in —
+an agent could stay under its turn cap while still reading 3-4× what was planned by
+making each `Read` too large. It is omitted when a unit's `in` is not set.
 
 A `partial` with `remaining[]` is a capacity signal: one slice run on `p` covers the rest.
 Inspector items are mapped onto the unit's scope files before the check (exact match,

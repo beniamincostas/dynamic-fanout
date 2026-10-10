@@ -40,11 +40,13 @@ Every B2-vec unit also gets an inspector call, with or without `quote` in `check
 
 ## Priced card (foreman → master, in every result as `card`)
 
-`{kind, depth, stage, S, W, refEffort, refSource, units[], verify, sweep, money, plannedAgents, basis}`.
+`{kind, depth, stage, S, W, refEffort, refSource, units[], verify, sweep, money, plannedAgents, calib, basis}`.
 Each `units[]` row: `{id, role, vec, cell, fb, rd, ctx, check, why, parity, estUsd, turns, override}`.
 `turns` is the unit's planned tool calls on its agent type (capped at that type's
 `maxTurns`); the unit's prompt states the same number. `money` = `{U, P, R, C, ratio,
-parityP, parityBound}`.
+parityP, parityBound}`. `calib` = `{scale, scaleByRole}`, the exact factors these
+estimates were priced with — pass it (or `stats.mjs`'s `CALIB` line) back on a later run
+so `stats.mjs update --ledger` compares that run's actual against what it actually used.
 
 ## UNIT_RESULT: every work and sweep agent returns this
 
