@@ -10,13 +10,35 @@ writes one inline Workflow script from this recipe, using the same card format a
 - The run card **always pauses** in implement mode: show cells, files, gate and worktree
   decision, and wait for `go`.
 
+## The implementation envelope
+
+In 0.1.0 implementation had no cost envelope: the first real run spent ~$226 over 9
+implement launches after a review that cost $58.58. Each theme now gets a budget before
+any agent runs:
+
+1. **Price every pass with a dry run** (`kind: 'implement'`, `dryRun: true`, the pass's
+   unit cards) and print the estimate (P, and per unit `estUsd` and `turns`).
+2. **Per-theme budget = that estimate × 1.5.** Print it on the run card.
+3. **At most 2 implement passes + 1 diff review per theme.** Then stop and ask the user,
+   with what is left and why; never a third pass on your own.
+4. **After each pass, run `ledger-cost`** on its transcript dir and compare actual with
+   the estimate. If the pass already used more than the theme budget, stop and ask.
+5. **One fresh session per theme** for multi-theme work (for example the themes a review
+   produced): this skill runs at `effort: max`, and one long session re-reads its growing
+   context on every turn (the first run's master cost ~$78, mostly that). Hand each
+   theme over as a short brief: findings, files, the baseline command.
+
+Size implementer units like crew units: the implementer's cap is 60 turns, and planned
+turns = min(60, (10 + in/2.5k) × effort factor) include its edit and test calls.
+
 ## Recipe (master, in order)
 
 1. **Baseline test run first** (master, one Bash call): record the command and the ids of
    tests already failing. The gate is **"no new failures"**, so pre-existing reds never
    trigger a re-route.
-2. **Validate the cards**: call `dynamic-fanout:fanout` with `kind: 'implement'`,
-   `dryRun: true` and the unit cards. It runs the rails and prices U/P/R/C without launching.
+2. **Validate and price the cards**: call `dynamic-fanout:fanout` with `kind: 'implement'`,
+   `dryRun: true` and the unit cards. It runs the rails and prices U/P/R/C without
+   launching; this is the pass's envelope (above).
 3. **Isolation decision.** Use a worktree only if **all** hold: inside a git repo, clean
    tree, the units' files are disjoint, and ≥3 units. Otherwise run the units **serially
    in place** — a worktree costs setup and a merge, and pays off only for parallel writers.
@@ -30,7 +52,8 @@ writes one inline Workflow script from this recipe, using the same card format a
    files, via `workflow('dynamic-fanout:fanout', { ...reviewArgs, kind: 'review' })`.
    Its blocker/high findings are verified at V3. One nesting level is allowed.
 7. **Master closes**: merge worktree branches (if any), re-run the baseline once on the
-   merged tree, then the step-7 close scripts and the ledgers (SKILL.md §7).
+   merged tree, then the step-7 close scripts and the ledgers (SKILL.md §7); report actual
+   vs the theme budget.
 
 ## Typical vectors and cells (Opus session, E_ref = xhigh)
 
@@ -40,8 +63,9 @@ writes one inline Workflow script from this recipe, using the same card format a
 | Category mapping with a default-bucket fallback | D2 A1 T1 C1 V1 B2 G1 | opus·high → null | keep · tests+V3 | booked; its own tests share its blind spots |
 | Rename/move across call sites | D0 A0 T1 C1 V2 B0 G0 | sonnet·low → sonnet·medium | keep · tests+set | grep count + tests catch misses |
 
-- B2 implementation logic → W·high; mechanical edits to an exact spec → sonnet. The
-  implementer always keeps CLAUDE.md: project rules (formats, read-only clients) live there.
+- B2 implementation logic → W·high; B1 logic → W·medium with `fb` W·high; mechanical
+  edits to an exact spec → sonnet. The implementer always keeps CLAUDE.md: project rules
+  (formats, read-only clients) live there.
 - `check` contains `tests` on every unit; B2 units add `V3` because a unit's own tests
   share its blind spots.
 
@@ -112,4 +136,5 @@ return { units: done, files, review: review && review.digest }
   path. If `review.started === false` (rails rejected it, or P exceeded `pauseUsd` before
   `confirmed` took effect), the skeleton returns `review` itself rather than
   `review.digest`, which would otherwise be `undefined` with no error raised.
-- The inline script has no commit meter: print U/P/R/C from the dry run on the run card.
+- The inline script has no commit meter: print U/P/R/C from the dry run and the theme
+  budget (×1.5) on the run card, and check actuals with `ledger-cost` after each pass.

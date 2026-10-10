@@ -29,9 +29,16 @@ it never overrides the rails in `workflow.md`.
   error handling, config/deploy, rendering/output, tests vs behaviour, security.
   Drop a dimension the scope cannot exhibit; do not pad.
 - Pack dimensions that read the same files into one unit; split by subtree, not by angle,
-  when one file cluster exceeds ~120k tokens or 25 files.
+  when one file cluster would push planned turns to the cap (see below) or exceeds 25 files.
 - Split a unit off only if its reading is ≥2× its path's fixed context. A ~1.2k-line module
   is usually solo or ≤3 agents.
+- **Split by work type, not only by subsystem** (`routing.md` §5). Peel the mechanical
+  sub-tasks of each dimension into sonnet units with a deterministic check: inventory
+  (every call site, option or constant), consistency (docs vs code, config vs schema),
+  mapping, extraction. Keep W for the judgement. The foreman warns (`routing:`) when more
+  than 70 % of planned unit spend runs on S.
+- **Size units so planned turns stay under the cap** (worker 30): roughly ≤50k reading
+  at high, ≤65k at medium. The dry-run card prints `turns`; a unit at its cap is too big.
 - Briefs name the files, the dimension, and the known false-positive traps the master already
   knows (e.g. a deliberate delay that looks like a race).
 
@@ -39,15 +46,20 @@ it never overrides the rails in `workflow.md`.
 
 | Unit | Vector | p → fb | ctx · check | Why |
 |---|---|---|---|---|
-| Money path: state + bank import + payment lookup, packed | D2 A1 T1 C1 V0 B2 G2 | **opus·xhigh (parity)** → null | keep · V3 | recall unverifiable; a wrong post double-marks paid |
-| Deploy path: workflow + Dockerfile + env wiring | D1 A1 T1 C1 V0 B2 G1 | **opus·xhigh (parity)** → null | keep · V3 | a missed deploy break is invisible until prod |
+| Money path: state + bank import + payment lookup, packed | D2 A1 T1 C1 V0 B2 G2 | **opus·xhigh (parity)** → null | omit + capsule · V3 | recall unverifiable; a wrong post double-marks paid |
+| Deploy path: workflow + Dockerfile + env wiring | D1 A1 T1 C1 V0 B2 G1 | **opus·xhigh (parity)** → null | omit + capsule · V3 | a missed deploy break is invisible until prod |
+| Retry/timeout logic in a deployed service | D2 A1 T1 C1 V1 B1 G1 | opus·medium → opus·high | omit · quote | B1: medium with a real fb, not high |
+| Docs vs code: every documented option exists and behaves as stated | D1 A0 T1 C1 V2 B0 G0 | sonnet·medium → opus·high | omit · set+quote | mechanical consistency, peeled off the judgement units |
 | Rendering: payload/report formatting with fixtures | D1 A0 T1 C1 V1 B1 G0 | sonnet·medium → opus·high | omit · tests+quote | fixtures catch it |
 | Constant/option sets defined vs compared | D0 A0 T1 C1 V2 B0 G0 | sonnet·low → sonnet·medium | omit · set | grep set-equality catches misses |
 
 - **Money-path and deploy-path units usually land in the parity cell** (V0∧B2∧D≥1): recall
-  cannot be checked and a miss is consequential. Run them exactly as ultracode would:
-  S·E_ref, `ctx:'keep'`, `fb: null`, claims at V3. Never downgrade them to fit the ceiling;
+  cannot be checked and a miss is consequential. Run them on ultracode's cell: S·E_ref,
+  `fb: null`, claims at V3, with `ctx:'omit'` plus a rules capsule and `path:line`
+  pointers into the relevant CLAUDE.md sections. Never downgrade them to fit the ceiling;
   pack harder or set `caps.parityBound`.
+- "Deployed code" alone is B1, not B2: B2 means booked numbers, money movement or a
+  deploy break that is invisible until production.
 - Everything cheaper than parity must name the check that catches its failure (`tests`,
   `set`, `quote`). `check: 'none'` outside parity is rejected.
 - A review unit that carries the conclusion and is not parity gets a non-null `fb` (W·high).
@@ -94,5 +106,6 @@ verify: {
 ## Report checklist (master)
 
 - Findings by severity: file:line, scenario, verdict, and the unit's `why` if it was re-routed.
-- A separate UNVERIFIED list with reasons (`budget`, `topK`, `split`, `infra`).
+- A separate UNVERIFIED list with reasons (`budget`, `topK`, `split`, `infra`). For
+  `budget`, run `stage:'verify'` with those claims rather than re-verifying them yourself.
 - Note any known false-positive trap you pre-empted in the briefs.

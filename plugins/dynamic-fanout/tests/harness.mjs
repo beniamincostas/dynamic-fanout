@@ -14,7 +14,7 @@ const CORE_NAMES = [
   'meta', 'MODELS', 'EFFORTS', 'DEFAULT_CALIB', 'UNIT_RESULT', 'calibrate', 'parseVec', 'isParity', 'cellOf', 'cellKey',
   'stronger', 'checksOf', 'estUsd', 'outTok', 'validate', 'price', 'moneyRails', 'buildCard', 'classify', 'toCents',
   'centsStr', 'compareNumbers', 'evalInvariants', 'dedupClaims', 'rungFor', 'mergeVerdicts', 'normalizeVerdict',
-  'mergeResults', 'mergeInspections', 'modeText', 'missingFiles', 'pathMatch', 'floorOf',
+  'mergeResults', 'mergeInspections', 'modeText', 'missingFiles', 'pathMatch', 'floorOf', 'turnsFor', 'typeKey', 'agentOpts', 'toScope',
 ]
 
 export function loadCore() {

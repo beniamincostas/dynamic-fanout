@@ -29,7 +29,13 @@ it never overrides the rails in `workflow.md`.
   config/thresholds, tests that pin behaviour, docs vs code drift.
 - Pack angles that read the same subtree into one unit: the nested CLAUDE.md is paid once.
 - Split a unit off only if its reading is ≥2× its path's fixed context.
-- Cap: ~120k tokens of reading or 25 files per agent. Over that, split by subtree.
+- Cap: planned turns under the agent's cap (worker 30): roughly ≤50k reading at high,
+  ≤65k at medium, ≤95k at low, or 25 files. Over that, split by subtree; the dry-run card
+  prints each unit's `turns`.
+- **Peel mechanical angles into sonnet units** (`routing.md` §5): enumerations, constant
+  inventories, docs-vs-code consistency and field mappings are sonnet work with a `set`
+  or `quote` check; W is for the tracing and the "why". The foreman warns (`routing:`)
+  when more than 70 % of planned unit spend runs on S.
 - Brief ≤120 words of pointers: paths, line ranges, the exact question, the evidence format.
 - Exclude duplicate, vendored or mirrored copies of the code, `.env`, key JSONs and `output/` from every scope.
 
@@ -46,7 +52,8 @@ Rules that matter here:
 - **Units that carry the answer always get a non-null `fb`.** A wrong answer unit cannot be
   rescued by synthesis; a peripheral angle (B0, context only) may have `fb: null`.
 - Research is rarely parity: V0∧B2∧D≥1 needs a consequential, uncheckable claim. If the
-  answer drives a booking or deploy decision, treat that unit as parity (S·E_ref, `ctx:keep`).
+  answer drives a booking or deploy decision, treat that unit as parity (S·E_ref,
+  `fb:null`, `ctx:omit` with a capsule and CLAUDE.md pointers).
 - `check` always contains `quote` for claim-producing units, so the inspector grounds every
   `{file, line, quote}` before a claim is accepted. A cited file outside `files_read` is a
   capability failure, not a style nit.

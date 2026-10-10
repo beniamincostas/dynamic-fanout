@@ -23,6 +23,31 @@ A deterministic foreman workflow enforces the cards:
 
 Code never picks a model or an effort.
 
+### 0.1.1: bounded agents
+
+The first real run (a large review of an LLM ticket bot, then 5 implementation themes)
+cost about **$376**. The review crew cost **$58.58 against a $20.62 estimate**, because
+crew agents ran unbounded: 28–65 turns each, reading 2.4–5.6× what was planned.
+CLAUDE.md-kept agents started at ~85k tokens. The kill switch then cut verification.
+Routing collapsed to Opus at high/xhigh, so no unit had a fallback. Implementation had
+no envelope (~$226 over 9 launches).
+
+0.1.1 fixes the cause, not just the numbers:
+- every crew agent is **turn-capped**, and its prompt carries a turn budget and
+  find-before-read rules;
+- the price model is **turn-aware** and fitted on those 119 agents;
+- ultracode's estimate is priced the way it actually runs (unbounded), so the 0.5× ceiling
+  compares like with like;
+- parity units drop CLAUDE.md for a rules capsule with pointers;
+- planned verification has its own reserve, and the kill switch no longer cuts it;
+- implementation passes get a priced envelope;
+- the foreman warns when a review puts most of its spend on the session model.
+
+Re-priced with 0.1.1, the same review cards come to U $119.38 and P $44.08 (agents
+capped), against the $58.58 the unbounded crew really spent. Following the new routing
+rules lowers P further. Details: `CHANGELOG.md` and
+`plugins/dynamic-fanout/skills/dynamic-fanout/references/economics.md`.
+
 ### Install
 
 ```
@@ -56,13 +81,16 @@ It also triggers on its own when an ultracode or multi-agent fan-out is about to
 
 The savings are ranked by size, because fixed context per agent dominates cost:
 1. **Fewer agents.** A price-aware solo gate and packing run the crew only when it pays.
-2. **No CLAUDE.md** on non-parity agents. A short rules capsule replaces it — and no MCP
-   tool schemas either, unless the unit needs them: `worker`/`skeptic` carry a plain
-   `Read, Grep, Glob, Bash` allowlist, and only units whose vector needs MCP or a long
-   tool loop run on `worker-mcp`, which keeps the full tool set.
-3. **Effort matched to difficulty.**
-4. **Risk-weighted verification**, with deterministic checks first.
-5. **Cheaper models** only where a named check catches their failures.
+2. **Bounded agents.** Every crew agent has a hard turn cap and a turn budget in its
+   prompt, and reads targeted line ranges instead of whole files.
+3. **No CLAUDE.md** by default, parity units included. A short rules capsule with
+   `path:line` pointers replaces it — and no MCP tool schemas either, unless the unit
+   needs them: `worker`/`skeptic` carry a plain `Read, Grep, Glob, Bash` allowlist
+   (~8k-token prefix), and only units whose vector needs MCP or a long tool loop run on
+   `worker-mcp`, which keeps the full tool set.
+4. **Effort matched to difficulty**, and mechanical work peeled into Sonnet units.
+5. **Risk-weighted verification**, with deterministic checks first.
+6. **Cheaper models** only where a named check catches their failures.
 
 ### Guarantees
 
@@ -70,8 +98,8 @@ The savings are ranked by size, because fixed context per agent dominates cost:
   own share, that is about 0.6× in total. Every run ends with a cost ledger (U/P/R/C,
   committed vs actual, master vs crew share).
 - **Quality:** units whose errors would be invisible *and* consequential sit in the
-  **parity cell**. They run exactly as ultracode would, at the same model and effort,
-  with CLAUDE.md kept and V3 verification. Every cheaper unit must name the objective
+  **parity cell**. They run on ultracode's model and effort, with no fallback and V3
+  verification; their CLAUDE.md rules come as a capsule with pointers. Every cheaper unit must name the objective
   check that catches its mistakes.
 - **No churn:** each unit gets 1 primary run and at most 1 capability re-route, onto a
   fallback the master chose up front. If that fails too, the result is reported as
@@ -83,11 +111,12 @@ The savings are ranked by size, because fixed context per agent dominates cost:
   (money paths, tax readings), the savings come mostly from agent count and context,
   not from cheaper cells. The ceiling can rise to **0.8×** ultracode, and the card says
   *parity-bound*.
-- The price model starts from priors. Stage-0 calibration numbers replace them (see
-  `plugins/dynamic-fanout/skills/dynamic-fanout/references/economics.md`), so early estimates can be off by a margin. One input,
-  the fixed per-agent prefix (`baseCtx`), is no longer a prior: a 2026-10-09 smoke run
-  measured it at 35–70k tokens in an MCP-heavy setup, and the default is now 40000. It
-  stays tunable via `calib.baseCtx` for leaner setups.
+- The price model is fitted on one real run (119 agents). A self-calibrating `scale`
+  (actual ÷ estimate, recorded at close and read back from the routing stats) corrects
+  the absolute dollars over time; see
+  `plugins/dynamic-fanout/skills/dynamic-fanout/references/economics.md`.
+- The master's own share is outside the crew ceiling. A long multi-theme session at
+  `effort: max` gets expensive; use a fresh session per implementation theme.
 - Cheaper "probe" routing, to learn whether a lower cell would do, is deferred to v0.2.
   v0.1 only ratchets cells **up** from its routing stats.
 - The Workflow rung runs only with opt-in: invoking the command, ultracode being on, or

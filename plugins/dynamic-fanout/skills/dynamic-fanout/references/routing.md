@@ -10,11 +10,12 @@ your cards, and never picks or changes a cell. The args shape and rail error tex
 2. Score the unit: the feature vector
 3. Decide in this order
 4. Context: `ctx:omit` vs `ctx:keep`
-5. The card
-6. Rails, and what to do when the plan is rejected
-7. Worked examples
-8. Using routing stats (cross-run learning)
-9. Anti-patterns
+5. Decompose by work type, and bound every agent
+6. The card
+7. Rails, and what to do when the plan is rejected
+8. Worked examples
+9. Using routing stats (cross-run learning)
+10. Anti-patterns
 
 ## 1. Principle and session-relative names
 
@@ -59,9 +60,9 @@ routes the unit to `dynamic-fanout:worker-mcp` instead of the plain `worker`; ev
 else (T0/T1, and `ctx:'omit'` work generally) runs on `worker`/`skeptic`, which carry an
 explicit `tools: Read, Grep, Glob, Bash` allowlist. The allowlist is a cost lever, not
 just a safety one: an agent file with a fixed tool list has no MCP tool-schema JSON in
-its system prompt, so its fixed prefix (`baseCtx`) stays at the lean end of the measured
-35–70k range instead of the heavy end. Only pay for the full tool set (`worker-mcp`,
-`worker-ctx`) when the unit actually needs it.
+its system prompt. Measured on 119 agents, allowlisted agents start at ~6–8k tokens
+(`baseCtxLean` 8000), full-tool agents at ~15k (`baseCtx` 15000) before any CLAUDE.md.
+Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs it.
 
 ## 3. Decide in this order
 
@@ -79,12 +80,18 @@ its system prompt, so its fixed prefix (`baseCtx`) stays at the lean end of the 
      holding. Default no: a second independent W·high look beats a pricier first one.
 3. **Effort** (then clamp to E_ref):
    - low: D0 ∧ V2.
-   - medium: D1, or D2 with V2 or B0. Anything the rules do not cover.
-   - high: D2 ∧ V≤1 ∧ B≥1; implementation logic; V3/V4 verifiers.
+   - medium: D1, or D2 with V2, B0 or **B1**. Anything the rules do not cover.
+   - high: **D2 ∧ V≤1 ∧ B2** only; B2 implementation logic; V3/V4 verifiers.
    - E_ref: the parity cell only.
+
+   In 0.1.0 "high" fired on any B≥1 unit, and "deployed code" made almost everything B1+:
+   the first real run collapsed to opus·high/xhigh and every `fb` came out `null`
+   (`p` ≥ W·high). A B1 unit now starts at **W·medium with `fb` W·high**, so the one
+   re-route exists and the stronger run is paid only when a check fails.
 4. **Parity cell** — the ≥ultracode guarantee. **V0 ∧ B2 ∧ D≥1** means an error would be
-   both invisible and consequential, so the unit runs exactly as ultracode would:
-   **S·E_ref, `ctx:keep`, `fb:null`, claims at V3** (on S·high). The rail enforces this.
+   both invisible and consequential, so the unit runs on ultracode's cell:
+   **S·E_ref, `fb:null`, claims at V3** (on S·high). The rail enforces the cell and `fb`
+   only; `ctx` is your choice and defaults to `omit` (section 4).
    Every other unit is cheaper only because it is easy, or because a named objective check
    catches its failure. `check:none` outside parity is a planning error.
 5. **Unsure → W·medium plus an objective check.** Never guess low; a cheap miss costs a
@@ -129,17 +136,65 @@ CLAUDE.md files can reach tens of thousands of tokens per subtree, re-read on ev
 
 | ctx | Agent | Use for | What the agent gets |
 |---|---|---|---|
-| `omit` (default) | `worker`, `skeptic`, `inspector` — or `worker-mcp` when the unit's vector has T2 | everything not listed below | `omitClaudeMd` + the shared **rules capsule**: the unit's constraints ("the billing system is read-only", "never print credentials") and `path:line` pointers to the CLAUDE.md sections it may need, read on demand |
-| `keep` | `worker-ctx`, `implementer` | the parity cell (rail), G2 units, every implementer | full CLAUDE.md, so its domain knowledge matches ultracode's |
+| `omit` (default) | `worker`, `skeptic`, `inspector` — or `worker-mcp` when the unit's vector has T2 | everything not listed below, **parity units included** | `omitClaudeMd` + the shared **rules capsule**: the unit's constraints ("the billing system is read-only", "never print credentials") and `path:line` pointers to the CLAUDE.md sections it may need, read on demand |
+| `keep` | `worker-ctx`, `implementer` | G2 units whose traps the capsule cannot state; every implementer | full CLAUDE.md, so its domain knowledge matches ultracode's |
+
+**Why parity no longer keeps CLAUDE.md.** In the first real run, CLAUDE.md-kept agents
+started at ~85k tokens and re-read all of it on every turn; most of it was irrelevant to
+the unit. Parity is about the *cell* (the same model and effort as ultracode), not about
+paying for the whole CLAUDE.md: a capsule with the unit's rules and `path:line` pointers
+into the relevant CLAUDE.md sections gives the same knowledge, read on demand.
 
 - Put `ctxTok` (CLAUDE.md tokens on that unit's path) on every `keep` card so P is priced right.
+- A `keep` unit runs on `worker-ctx` (full tools, 15k prefix + `ctxTok`), never the lean `worker`.
 - Pack `keep` units in the same subtree together: one 66k context, not three.
 - A capsule pointer beats `keep` whenever the trap fits in one line (G1).
 - `ctx` and `T` are independent choices: a T2, `ctx:'omit'` unit runs on `worker-mcp`
   (full tool set, no CLAUDE.md); a T2, `ctx:'keep'` unit still runs on `worker-ctx`
   (`ctx:'keep'` wins the agent-type pick — see `workflow.md`'s agent-type rule).
 
-## 5. The card
+## 5. Decompose by work type, and bound every agent
+
+**Split by work type, not by subsystem.** In the first real run the review was split by
+subsystem, every unit mixed judgement with mechanical checking, and every unit landed on
+opus. Peel the mechanical part of each subsystem into its own sonnet unit with a
+deterministic check; keep W for the judgement.
+
+| Work type | Examples | Cell | Check |
+|---|---|---|---|
+| Judgement | failure modes across files, state/idempotency, "is this rule applied correctly" | W·medium (W·high only for D2 ∧ V≤1 ∧ B2) | quote, V3 |
+| Inventory | every call site / option / constant with file:line | sonnet·low | set |
+| Consistency | docs vs code, config vs schema, enum defined vs compared | sonnet·medium | set+quote |
+| Mapping | field → column, category → account, route → handler | sonnet·medium | quote, tests |
+| Extraction | numbers, rows, totals from files or queries | sonnet·medium | tieout+rederive |
+
+Example: "review the ticket bot" split by subsystem gives 4 opus units. Split by work type
+it gives 2 judgement units (decision logic, external side effects) on opus·medium, plus
+one sonnet unit for "every category value defined vs used" and one for "docs vs code".
+
+**The routing warning.** For `review`/`research` with ≥3 units, the foreman warns
+`routing: X% of planned work-unit spend runs on <S>; split mechanical work (inventory,
+consistency, mapping, extraction) into sonnet units` when more than 70% of the planned
+unit spend sits on S. Treat it as a re-plan prompt, not noise.
+
+**Turn caps.** Every crew agent type has a hard `maxTurns`; the foreman prices each unit
+with planned turns = min(cap, round((10 + in/2500) × effort factor)) and the prompt states
+"about N tool calls (hard stop at CAP)".
+
+| Agent type (typeKey) | Picked when | Cap | Prefix |
+|---|---|---|---|
+| `worker` | default | 30 | lean 8k |
+| `worker-mcp` (workerMcp) | vector T2, `ctx:omit` | 35 | 15k |
+| `worker-ctx` (workerCtx) | `ctx:keep` | 30 | 15k + `ctxTok` |
+| `implementer` | role `implement` | 60 | 15k + `ctxTok` |
+| `skeptic` | verifiers | 12 | lean 8k |
+| `inspector` | quote checks, B2 units | 6 | lean 8k |
+
+Effort factor: low 0.6, medium 0.8, high 1.0, xhigh 1.3, max 1.6 (haiku 0.6). Size each
+unit so its planned turns stay **below** its cap; planned turns at the cap mean the unit
+will run out and come back `partial`, so split it. The card shows `turns` per unit.
+
+## 6. The card
 
 One JSON line per unit, in the `units[]` shape of `workflow.md`. In your plan and on the run
 card, identical units share one line and one `why` (`u4–u7`); expand them to separate unit
@@ -147,7 +202,7 @@ objects in the args.
 
 ```js
 {id:'u3', role:'review', vec:'D2 A1 T1 C1 V0 B2 G2', n:0, scope:{files:[...]}, in:38000,
- ctxTok:30000, ctx:'keep', p:{effort:'xhigh'}, fb:null, check:'V3',
+ ctx:'omit', p:{effort:'xhigh'}, fb:null, check:'V3',
  why:'parity: a missed money-path bug is invisible and gets booked', brief:'...'}
 {id:'u5', role:'data', vec:'D1 A0 T1 C1 V2 B2 G1', n:1, in:24000, ctx:'omit',
  p:{model:'sonnet', effort:'medium'}, fb:{effort:'high'}, rd:{model:'sonnet', effort:'medium'},
@@ -159,8 +214,10 @@ objects in the args.
   route can be traced to its reasoning.
 - `check` is `+`-joined: `quote`, `set`, `tests`, `tieout`, `rederive`, `V2`, `V3`, `V4`.
 - `brief` ≤120 words of pointers (paths, line ranges, questions); never pasted content.
+  For an `omit` parity unit, the capsule pointers (`CLAUDE.md:40-62 payment states`) go here.
+- The dry-run card adds `turns` (planned tool calls) and `estUsd` per unit.
 
-## 6. Rails, and what to do when the plan is rejected
+## 7. Rails, and what to do when the plan is rejected
 
 The foreman rejects the **whole** plan before any agent launches; the authoritative table
 and error prefixes are in `workflow.md`. In short:
@@ -168,11 +225,12 @@ and error prefixes are in `workflow.md`. In short:
 - haiku with tools or an effort; a missing or unknown effort; effort > E_ref;
 - a cell above S without `allowUp`, or >1 allow-up unit;
 - `fb` not strictly stronger than `p`, above S·E_ref, or non-null on parity/superseding units;
-- parity unit not on S·E_ref with `ctx:keep`;
+- parity unit not on S·E_ref (the cell only; `ctx` is free);
 - missing `vec`/`why`/`brief`/`check`, `check:none` outside parity, or `n:1` without `rederive`;
 - a verifier weaker than a producer it checks;
 - P + R > C, or `parityBound` without parity overflow; planned agents > `caps.maxAgents`.
-- Warning only: >2 cells in the work stage, >25 planned agents.
+- Warning only: >2 cells in the work stage, >25 planned agents, >70% of review/research
+  unit spend on S (`routing:`).
 
 **Fix the plan once.** If P + R > C, change the plan in this order: pack harder → lower
 effort on checkable non-parity units → move checkable units to sonnet → narrow
@@ -181,30 +239,33 @@ alone exceed 0.5·U after packing, set `caps.parityBound` (C rises to ≤0.8·U;
 ledger say so). If the second attempt still fails, narrow verification or go solo — do not
 iterate on the rails. Use `dryRun:true` when unsure.
 
-## 7. Worked examples
+## 8. Worked examples
 
-Opus session, E_ref = xhigh, so S = W = opus. Rough lean price for orientation (in=40k,
-from the `economics.md` model, `baseCtx` 40000): sonnet·medium ≈$0.41, opus·high ≈$0.94,
-opus·xhigh with 30k CLAUDE.md (the ultracode-style agent) ≈$1.39.
+Opus session, E_ref = xhigh, so S = W = opus. Rough price for orientation (in=40k, lean
+`worker`, turn-capped, from the `economics.md` model): sonnet·medium ≈$0.82, opus·medium
+≈$1.63, opus·high ≈$2.13, opus·xhigh ≈$2.54; the unbounded ultracode-style opus·xhigh agent
+with 30k CLAUDE.md ≈$3.95.
 
 | Unit | Vector | p → fb | ctx · check | why |
 |---|---|---|---|---|
 | every place an enum's allowed values are defined or compared | D0 A0 T1 C1 V2 B0 G0 | sonnet·low → sonnet·medium | omit · set | V2: grep set-equality catches misses |
 | …where code overrides a model's proposal, with file:line | D2 A1 T1 C2 V1 B0 G1 | opus·medium → opus·high | omit · quote | C2 needs W; advisory B0, so medium |
-| Review `payments/`: state machine + matching + external lookup, packed | D2 A1 T1 C1 V0 B2 G2 | **opus·xhigh (parity)** → null | keep · V3 | parity: recall unverifiable; a wrong result double-settles an invoice |
+| Review `payments/`: state machine + matching + external lookup, packed | D2 A1 T1 C1 V0 B2 G2 | **opus·xhigh (parity)** → null | omit (capsule + pointers) · V3 | parity: recall unverifiable; a wrong result double-settles an invoice |
 | …rendering: formatter.py, payload.py, report.py | D1 A0 T1 C1 V1 B1 G0 | sonnet·medium → opus·high | omit · tests+quote | V1: fixtures catch it |
+| …deployed retry/backoff logic | D2 A1 T1 C1 V1 B1 G1 | opus·medium → opus·high | omit · quote | B1: not booked, so medium with a real fb |
 | Billing export, invoices + credit notes for one month: rows, totals by tax_code, duplicate doc_no, negatives | D1 A0 T1 C1 V2 B2 G1 N | sonnet·medium → opus·high | omit · tieout+rederive | V2: integer cents; spec pins the delimiter, encoding and date format |
 | …tax formula per tax_code vs the tax-rules reference | D2 A1 T1 C1 V1 B2 G2 | opus·high → null | keep · V3 | G2: tax-code semantics and sign conventions; a wrong reading still ties out |
-| Data warehouse (MCP): contract price vs invoiced price, one region-month | D2 A1 T2 C1 V1 B1 G2 N | opus·high → null; `rd` opus·medium via an alternate join key | keep · rederive | G2: a wrong join returns clean numbers (e.g. a placeholder/default key) |
+| Data warehouse (MCP): contract price vs invoiced price, one region-month | D2 A1 T2 C1 V1 B1 G2 N | opus·medium → opus·high; `rd` opus·medium via an alternate join key | keep · rederive | G2: a wrong join returns clean numbers (e.g. a placeholder/default key) |
 | Implement report_export: add a column + fixtures, exact spec | D1 A0 T1 C1 V2 B1 G0 | sonnet·medium (implementer) → opus·high | keep · tests | V2: the tests are the check |
 | …category mapping, with a default-bucket fallback | D2 A1 T1 C1 V1 B2 G1 | opus·high → null | keep · V3+tests | B2: booked; its own tests share its blind spots |
 
 Read the pairs: the mechanical half goes cheap because a check catches it; the semantic half
 (tax reading, join choice, mapping fallback) gets its own W unit, because the tie-out or the
-tests next to it would pass a wrong reading. In the data-warehouse row the planned re-derivation is the
-second opinion; with `fb:null` a mismatch ends UNVERIFIED with both numbers for the master.
+tests next to it would pass a wrong reading. In the data-warehouse row (B1, so medium) the
+planned re-derivation is the second opinion and a mismatch spends the one re-route on
+opus·high `rederive`; with `fb:null` it would end UNVERIFIED with both numbers for the master.
 
-## 8. Using routing stats (cross-run learning)
+## 9. Using routing stats (cross-run learning)
 
 In the scouting batch, run `node <base>/../../scripts/stats.mjs --summary <kind>` (base =
 this skill's base directory; ≤40 lines). It prints cohorts keyed
@@ -228,7 +289,7 @@ second run, which breaks right-first-time. In v0.1 stats only ratchet cells **up
 No stats, or n<4: route from the rubric alone. A cohort's `why` pattern that keeps ending
 REFUTED is a rubric gap; fix the scoring next time, not just the cell.
 
-## 9. Anti-patterns
+## 10. Anti-patterns
 
 - **Over-routing drift.** Scoring everything V0/B2 out of caution puts every unit in
   parity or at W·high, and the savings vanish. The run card prints the cell mix; a parity
@@ -240,6 +301,11 @@ REFUTED is a rubric gap; fix the scoring next time, not just the cell.
   wrong answer, and nothing re-routes. A tie-out proves arithmetic, not semantics; split
   the semantic question into its own W unit and give every N unit a re-derivation by a
   different method.
+- **Splitting by subsystem.** Each unit mixes judgement with inventory, so each lands on
+  opus·high and the plan has no sonnet work and no fallbacks. Split by work type (section 5).
+- **Unbounded reading.** A brief that says "review X" without line ranges or a question
+  invites whole-file reads; in the first real run agents read 2.4–5.6× what was planned.
+  Briefs name ranges and questions; the turn cap and find-before-read rule do the rest.
 - **Many cells in one stage.** Each extra model·effort pair is a cold cache; four cells of
   two agents each pay fixed context four times. Merge up, or stage them.
 - **Cheap-first ladders.** Starting at haiku/sonnet·low "to see if it works" and escalating
