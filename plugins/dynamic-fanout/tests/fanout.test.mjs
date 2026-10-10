@@ -102,9 +102,9 @@ test('rail: fallback must be strictly stronger', async () => {
 test('rail: parity cell runs as ultracode would, fb null', async () => {
   const a = baseArgs()
   a.units[0] = { ...a.units[0], vec: 'D2 A1 T1 C1 V0 B2 G2' }
-  await rejects(a, /^parity u1: V0∧B2∧D≥1 must run as ultracode would/)
+  await rejects(a, /^parity u1: V0∧B2∧D≥1 must run on the session cell as ultracode would/)
   await rejects(a, /^parity u1: fb must be null/)
-  a.units[0] = { ...a.units[0], p: { effort: 'xhigh' }, ctx: 'keep', fb: null }
+  a.units[0] = { ...a.units[0], p: { effort: 'xhigh' }, ctx: 'omit', fb: null }  // 0.1.1: CLAUDE.md no longer forced
   const { res } = await runFanout({ ...a, dryRun: true }, responder())
   assert.equal(res.reason, 'dryRun')
   assert.equal(res.card.units[0].parity, true)
@@ -199,31 +199,42 @@ test('pause: a plan above pauseUsd returns the card unstarted unless confirmed',
 
 // ───────────────────────── pricing ─────────────────────────
 
-test('estUsd matches the documented formula', () => {
-  assert.equal(core.calibrate().baseCtx, 40000, 'default fixed prefix per agent (measured)')
-  const K = core.calibrate({ baseCtx: 15000 })
-  // opus·xhigh, 40k read, 30k CLAUDE.md: input (85k·4·1.25 + 65k·11·4·0.1) + output 22k·20
-  assert.equal(core.estUsd({ model: 'opus', effort: 'xhigh' }, 40000, 30000, K), 1.151)
-  // sonnet·low, 20k read, no CLAUDE.md
-  assert.equal(core.estUsd({ model: 'sonnet', effort: 'low' }, 20000, 0, K), 0.1825)
-  // haiku: no effort, haikuOut tokens
-  assert.equal(core.estUsd({ model: 'haiku' }, 10000, 0, K), round(((25000 * 1.25) + (20000 * 11 * 0.1)) / 1e6 + 3000 * 5 / 1e6))
-  // calib overrides
-  const K2 = core.calibrate({ baseCtx: 15000, outByEffort: { low: 1000 }, prices: { sonnet: { out: 20 } }, turns: 1 })
-  assert.equal(core.estUsd({ model: 'sonnet', effort: 'low' }, 0, 0, K2), round((15000 * 2 * 1.25) / 1e6 + 1000 * 20 / 1e6))
+test('estUsd: turn-aware formula, lean vs full prefix, caps, scale', () => {
+  const K = core.calibrate()
+  assert.equal(K.baseCtxLean, 8000)
+  assert.equal(K.baseCtx, 15000)
+  // turns ≈ (10 + in/2.5k) · effort factor, capped
+  assert.equal(core.turnsFor({ model: 'opus', effort: 'high' }, 50000, K), 30)
+  assert.equal(core.turnsFor({ model: 'opus', effort: 'high' }, 100000, K, 30), 30)
+  assert.equal(core.turnsFor({ model: 'opus', effort: 'medium' }, 50000, K), 24)
+  // lean opus·high, 50k read, capped at 30 turns: write (8k + 3·50k)·4·1.25 + read 30·(8k + 75k)·4·0.1 + out 30·1500·20
+  const want = round((158000 * 4 * 1.25 + 30 * 83000 * 4 * 0.1 + 30 * 1500 * 20) / 1e6)
+  assert.equal(core.estUsd({ model: 'opus', effort: 'high' }, 50000, 0, K, { lean: true, cap: 30 }), want)
+  // the full prefix + CLAUDE.md costs more than lean for the same work
+  const full = core.estUsd({ model: 'opus', effort: 'high' }, 50000, 78000, K, { lean: false, cap: 30 })
+  assert.ok(full > want * 1.5, `${full} vs ${want}`)
+  // calib.scale multiplies every estimate
+  assert.equal(core.estUsd({ model: 'opus', effort: 'high' }, 50000, 0, core.calibrate({ scale: 2 }), { lean: true, cap: 30 }), round(want * 2))
+  // haiku: no effort, fixed small output per turn
+  assert.ok(core.estUsd({ model: 'haiku' }, 1000, 0, K, { lean: true }) < 0.1)
 })
 const round = x => Math.round(x * 10000) / 10000
 
-test('price: U/P/R/C for the base plan', () => {
+test('price: ultracode baseline is unbounded (full prefix, CLAUDE.md, roaming) vs a capped lean crew', () => {
   const a = baseArgs()
+  const K = core.calibrate()
   const V = core.validate(a)
-  const M = core.price(a, V, core.calibrate({ baseCtx: 15000 }))
-  assert.equal(M.U, round(6 * 1.151 + 2 * 1.007))
+  const M = core.price(a, V, K)
+  const ref = { model: 'opus', effort: 'xhigh' }
+  const ultraO = { lean: false, cap: K.ultraTurnCap, readFactor: K.ultraReadFactor }
+  assert.equal(M.U, round(6 * core.estUsd(ref, 40000, 30000, K, ultraO) + 2 * core.estUsd(ref, 20000, 30000, K, ultraO)))
   assert.equal(M.C, round(0.5 * M.U))
-  // R: the floor (largest single repair, u1 on opus·high) beats 10 % of the repairs
-  const repairU1 = core.estUsd({ model: 'opus', effort: 'high' }, 30000, 0, core.calibrate({ baseCtx: 15000 }))
-  assert.equal(M.R, round(repairU1))
+  assert.ok(M.verifyUsd > 0)
   assert.ok(M.P + M.R < M.C)
+  // a unit records its agent type, planned turns and lean flag
+  assert.equal(V.units[0].typeKey, 'worker')
+  assert.equal(V.units[0].o.lean, true)
+  assert.ok(V.units[0].turns > 0 && V.units[0].turns <= K.caps.worker)
 })
 
 // ───────────────────────── money ─────────────────────────
@@ -357,14 +368,18 @@ test('brief failure: never re-run, goes to the master', async () => {
   assert.deepEqual(res.digest.exceptions.map(e => [e.id, e.cls]), [['u2', 'brief']])
 })
 
-test('infra: one retry on the same cell without the custom agentType', async () => {
-  const { res, calls } = await runFanout(baseArgs(), responder({ 'u2:1': null }))
-  const u2 = calls.filter(c => /^u2:/.test(tagOf(c.prompt)))
+test('infra: one retry on the same cell; drops a plugin type only if it never worked in the run', async () => {
+  // u1 answers first on dynamic-fanout:worker, so u2's retry keeps the type (and its turn cap)
+  let r = await runFanout(baseArgs(), responder({ 'u2:1': null }), { sequential: true })
+  let u2 = r.calls.filter(c => /^u2:/.test(tagOf(c.prompt)))
   assert.equal(u2.length, 2)
   assert.equal(cellOfCall(u2[0].opts), cellOfCall(u2[1].opts))
-  assert.equal(u2[0].opts.agentType, 'dynamic-fanout:worker')
-  assert.equal(u2[1].opts.agentType, undefined)
-  assert.equal(res.ledger.units.find(l => l.id === 'u2').outcome, 'ok')
+  assert.equal(u2[1].opts.agentType, 'dynamic-fanout:worker')
+  assert.equal(r.res.ledger.units.find(l => l.id === 'u2').outcome, 'ok')
+  // nothing on that type has worked yet: the retry falls back to the default subagent
+  r = await runFanout(baseArgs(), responder({ 'u1:1': null }), { sequential: true })
+  const u1 = r.calls.filter(c => /^u1:/.test(tagOf(c.prompt)))
+  assert.equal(u1[1].opts.agentType, undefined)
 })
 
 test('capacity: one slice run on the same cell for the missing files only', async () => {
@@ -602,4 +617,55 @@ test('agent type: worker by default, worker-mcp for T2, worker-ctx for ctx keep'
   assert.equal(at('u1'), 'dynamic-fanout:worker')
   assert.equal(at('u2'), 'dynamic-fanout:worker-mcp')
   assert.equal(at('u3'), 'dynamic-fanout:worker-ctx')
+})
+
+// ───────────────────────── 0.1.1 ─────────────────────────
+
+test('every unit prompt carries a turn + reading budget and the scope-path rule', async () => {
+  const { calls } = await runFanout(baseArgs(), responder())
+  const p = calls.find(c => tagOf(c.prompt) === 'u1:1').prompt
+  assert.match(p, /Budget: about \d+ tool calls \(hard stop at 30\)/)
+  assert.match(p, /Read only the line ranges you need/)
+  assert.match(p, /Cite every file path exactly as it is written under Scope/)
+})
+
+test('toScope maps short evidence paths onto scope files; the inspector gets the full path', async () => {
+  assert.equal(core.toScope('fanout.js', ['/abs/x/workflows/fanout.js']), '/abs/x/workflows/fanout.js')
+  assert.equal(core.toScope('src/a.py', ['/r/src/a.py', '/r/lib/b.py']), '/r/src/a.py')
+  assert.equal(core.toScope('a.py', ['/r/src/a.py', '/r/old/a.py']), 'a.py', 'ambiguous basename stays as cited')
+  const { calls } = await runFanout(baseArgs(), responder({ 'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('a.py', 3)] }) }))
+  const insp = calls.find(c => tagOf(c.prompt) === 'i:u1:1')
+  assert.match(insp.prompt, /f0\.e0 \| src\/a\.py \| 3 \|/)
+})
+
+test('kill switch stops new work but never the planned verification', async () => {
+  const a = baseArgs({ caps: { pauseUsd: 100, maxOutputTokens: 1000 } })
+  a.units = [unit('k1', { scope: { files: ['src/k1.py'] } })]
+  a.ultra = { ...a.ultra, agents: 6 }
+  const r = await runFanout(a, responder({ 'k1:1': okUnit({ files_read: ['src/k1.py'], findings: [finding('src/k1.py', 3, 'high', 'h')] }) }),
+    { spent: n => (n >= 2 ? 900 : 0), sequential: true })
+  const v = r.calls.filter(c => tagOf(c.prompt).startsWith('v:'))
+  assert.equal(v.length, 1, 'the V3 skeptic still ran after the kill switch tripped')
+  assert.equal(r.res.results.claims[0].verdict, 'CONFIRMED')
+})
+
+test('promoted launches respect the work pool', async () => {
+  const a = baseArgs()
+  a.ultra = { ...a.ultra, agents: 4, verifiers: 0 }
+  a.units = ['c1', 'c2', 'c3', 'c4'].map(id => unit(id))
+  a.caps = { pauseUsd: 100, reserveCapPct: 100, rerouteRate: 1, ceilingUsd: 3.2 }
+  const fail = okUnit({ status: 'blocked', blocked_reason: 'too_hard' })
+  const { res } = await runFanout(a, responder({ 'c1:1': fail, 'c2:1': fail }), { sequential: true })
+  for (const id of ['c3', 'c4']) {
+    const L = res.ledger.units.find(l => l.id === id)
+    assert.notEqual(L.outcome, 'ok-promoted', `${id} must not launch promoted past the work pool`)
+  }
+})
+
+test('routing warning when most planned spend sits on the session model', async () => {
+  const a = baseArgs({ dryRun: true })
+  a.units = ['r1', 'r2', 'r3'].map(id => unit(id, { p: { effort: 'high' }, fb: { effort: 'xhigh' } }))
+  a.ultra = { ...a.ultra, agents: 12 }
+  const { res } = await runFanout(a, responder())
+  assert.ok(res.warnings.some(w => /^routing: \d+% of planned work-unit spend runs on opus/.test(w)), res.warnings.join(' | '))
 })

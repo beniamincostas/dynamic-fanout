@@ -29,11 +29,13 @@ it never overrides the rails in `workflow.md`.
 |---|---|---|
 | Extract + compute (N) | load, filter, aggregate; returns `numbers` | sonnet·medium when formats are pinned |
 | Re-derivation (planned) | the same totals by a **different method** | `rd` cell on the same card |
-| Semantic (W) | tax-code reading, join choice, sign convention, period rule | W·high, `ctx:'keep'` when G2 |
+| Semantic (W) | tax-code reading, join choice, sign convention, period rule | W·high when B2 (else W·medium → W·high), `ctx:'keep'` only when G2 |
 | Anomaly scan | duplicates, negatives, out-of-period, gaps | sonnet·low/medium, `check: 'set'` |
 
 - Pack one file family (e.g. invoices + credit notes for one month) into one compute unit; split by
-  source, not by metric. Cap ~120k reading or 25 files per agent.
+  source, not by metric. Keep planned turns under the agent's cap (worker 30, worker-mcp
+  35): roughly ≤65k reading at medium, ≤50k at high, or 25 files; the dry-run card prints
+  each unit's `turns`.
 - **Semantic questions are separate W units.** A tie-out proves arithmetic, not
   semantics: a wrong tax_code reading or a wrong join still ties out perfectly.
 
@@ -54,7 +56,7 @@ it never overrides the rails in `workflow.md`.
 |---|---|---|---|---|
 | Billing export for one month: rows, totals by tax_code, dup doc_no, negatives | D1 A0 T1 C1 V2 B2 G1 N | sonnet·medium → opus·high (rd sonnet·medium) | omit · tieout+rederive | integer cents; spec pins the delimiter, encoding and date format |
 | Tax formula per tax_code vs the tax-rules reference | D2 A1 T1 C1 V1 B2 G2 | opus·high → null | keep · V3 | tax-code semantics and sign conventions: a wrong reading still ties out |
-| Data warehouse (MCP): contract price vs invoiced price, one region-month | D2 A1 T2 C1 V1 B1 G2 N | opus·high → null (rd opus·medium) | keep · tieout+rederive | wrong join returns clean numbers (e.g. a placeholder/default key) |
+| Data warehouse (MCP): contract price vs invoiced price, one region-month | D2 A1 T2 C1 V1 B1 G2 N | opus·medium → opus·high (rd opus·medium) | keep · tieout+rederive | wrong join returns clean numbers (e.g. a placeholder/default key) |
 
 ## reduce.invariants
 

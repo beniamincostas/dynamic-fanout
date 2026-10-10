@@ -2,8 +2,19 @@
 // stats.mjs — cross-run routing stats for dynamic-fanout. Sole writer of routing-stats.json.
 //
 // Usage:
-//   node scripts/stats.mjs update <workflow-output.json> [--file <stats.json>] [--kind <k>] [--verify <verify-stage-output.json>]
+//   node scripts/stats.mjs update <workflow-output.json> [--file <stats.json>] [--kind <k>] [--verify <verify-stage-output.json>] [--ledger <ledger-cost.mjs --json output>]
 //   node scripts/stats.mjs --summary <kind> [--file <stats.json>]
+//
+// Self-calibration: with --ledger <file>, the actual $ from that ledger-cost --json file
+// (its .totals.usd) is compared to this run's estimate (digest.money.committedUsd +
+// rerouteUsd); the run is skipped for calibration when that estimate is <= 0 (nothing to
+// compare against). ratio = actualUsd / estimatedUsd, clamped to [0.3, 5] so one odd run can't
+// swing the dial too far, then folded into stats.calib.scale as an exponentially weighted
+// average (alpha 0.5; the first observation sets calib.scale outright). stats.calib.n counts
+// observations and stats.calib.last = {ratio, at} records the clamped ratio and which
+// observation it was. `--summary <kind>` prints a trailing `CALIB {"scale":X.XX}` line (plus
+// one line telling the master to pass it back as args.calib) whenever calib.scale exists, so
+// the next run's estimate can be scaled by what the last run actually cost.
 //
 // Default file: $DYNAMIC_FANOUT_STATS, else ~/.claude/dynamic-fanout/routing-stats.json.
 // Cohort key: kind/role/D<d>V<v>B<b>T<t>/<cell of p>/<ctx>
@@ -40,6 +51,9 @@ export const DECAY = 0.9;
 export const MAX_RUNS = 50;
 export const CONF_HI = 0.7;
 export const RULES = { promoteN: 4, promoteBelow: 0.8, reserveN: 4, confMinN: 4, confGap: 0.1, envelope: 0.6, showN: 2 };
+export const CALIB_ALPHA = 0.5;
+export const CALIB_MIN = 0.3;
+export const CALIB_MAX = 5;
 
 export function defaultFile(env = process.env) {
   return env.DYNAMIC_FANOUT_STATS || path.join(os.homedir(), '.claude', 'dynamic-fanout', 'routing-stats.json');
@@ -226,6 +240,28 @@ export function applyRun(stats, result, { kind: kindArg, runId, now = new Date()
   return stats;
 }
 
+/** This run's estimate, the same two figures the master's done-line reports. */
+export function estimatedUsdOf(result) {
+  const m = result?.digest?.money ?? {};
+  return (Number(m.committedUsd) || 0) + (Number(m.rerouteUsd) || 0);
+}
+
+/**
+ * Fold one (actualUsd, estimatedUsd) observation into stats.calib (mutates and returns
+ * stats). A no-op when estimatedUsd <= 0 — nothing to compare the actual against. ratio is
+ * clamped to [CALIB_MIN, CALIB_MAX] before it enters the EWA, so one odd run can't swing
+ * calib.scale too far in one step.
+ */
+export function applyCalibration(stats, { actualUsd, estimatedUsd }) {
+  if (!(estimatedUsd > 0)) return stats;
+  const ratio = Math.min(CALIB_MAX, Math.max(CALIB_MIN, (Number(actualUsd) || 0) / estimatedUsd));
+  const calib = (stats.calib ??= { n: 0, scale: null, last: null });
+  calib.scale = calib.n > 0 ? CALIB_ALPHA * ratio + (1 - CALIB_ALPHA) * calib.scale : ratio;
+  calib.n += 1;
+  calib.last = { ratio, at: calib.n };
+  return stats;
+}
+
 const pct = (a, b) => (b > 0 ? Math.round((100 * a) / b) : 0);
 const r1 = (x) => (Math.round(x * 10) / 10).toString();
 
@@ -294,7 +330,7 @@ export function summary(stats, kind, maxLines = 40) {
 }
 
 function parseArgs(argv) {
-  const a = { cmd: null, input: null, file: null, kind: null, verify: null };
+  const a = { cmd: null, input: null, file: null, kind: null, verify: null, ledger: null };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === 'update') { a.cmd = 'update'; a.input = argv[++i]; }
@@ -302,18 +338,24 @@ function parseArgs(argv) {
     else if (t === '--file') a.file = argv[++i];
     else if (t === '--kind') a.kind = argv[++i];
     else if (t === '--verify') a.verify = argv[++i];
+    else if (t === '--ledger') a.ledger = argv[++i];
     else if (t === '-h' || t === '--help') a.cmd = 'help';
   }
   return a;
 }
 
-const USAGE = 'usage: node scripts/stats.mjs update <workflow-output.json> [--file <stats.json>] [--kind <k>] [--verify <verify-stage-output.json>]\n       node scripts/stats.mjs --summary <kind> [--file <stats.json>]';
+const USAGE = 'usage: node scripts/stats.mjs update <workflow-output.json> [--file <stats.json>] [--kind <k>] [--verify <verify-stage-output.json>] [--ledger <ledger-cost.mjs --json output>]\n       node scripts/stats.mjs --summary <kind> [--file <stats.json>]';
 
 export function main(argv = process.argv.slice(2), env = process.env) {
   const a = parseArgs(argv);
   const file = a.file ?? defaultFile(env);
   if (a.cmd === 'summary' && a.kind) {
-    console.log(summary(loadStats(file), a.kind));
+    const stats = loadStats(file);
+    console.log(summary(stats, a.kind));
+    if (typeof stats.calib?.scale === 'number') {
+      console.log(`CALIB {"scale":${stats.calib.scale.toFixed(2)}}`);
+      console.log('pass this scale back to the foreman as args.calib.scale on the next run');
+    }
     return 0;
   }
   if (a.cmd === 'update' && a.input) {
@@ -353,6 +395,18 @@ export function main(argv = process.argv.slice(2), env = process.env) {
       console.log('stats: no units ran p in this output (verify-only stage, or every unit refused); nothing recorded');
       return 0;
     }
+    let ledgerJson = null;
+    if (a.ledger) {
+      let ledgerRaw;
+      try { ledgerRaw = fs.readFileSync(a.ledger, 'utf8'); } catch (e) {
+        console.error(`stats: cannot read ${a.ledger}: ${e.message}`);
+        return 2;
+      }
+      try { ledgerJson = JSON.parse(ledgerRaw); } catch (e) {
+        console.error(`stats: ${a.ledger} is not JSON: ${e.message}`);
+        return 2;
+      }
+    }
     // The same output folded twice would double-count; key runs by content hash.
     const runId = crypto.createHash('sha256').update(JSON.stringify(result.ledger)).digest('hex').slice(0, 16);
     const stats = loadStats(file);
@@ -361,9 +415,16 @@ export function main(argv = process.argv.slice(2), env = process.env) {
       return 0;
     }
     applyRun(stats, result, { kind: a.kind ?? undefined, runId });
+    let calibNote = '';
+    if (ledgerJson) {
+      const estimatedUsd = estimatedUsdOf(result);
+      const before = stats.calib?.n ?? 0;
+      applyCalibration(stats, { actualUsd: Number(ledgerJson?.totals?.usd) || 0, estimatedUsd });
+      calibNote = (stats.calib?.n ?? 0) > before ? `, calib.scale=${stats.calib.scale.toFixed(2)}` : ', calib skipped (estimate <= 0)';
+    }
     saveStats(file, stats);
     const last = stats.runs.at(-1);
-    console.log(`stats: recorded ${last.units} unit(s), kind=${last.kind}, run ${runId} -> ${file}`);
+    console.log(`stats: recorded ${last.units} unit(s), kind=${last.kind}, run ${runId} -> ${file}${calibNote}`);
     return 0;
   }
   console.log(USAGE);

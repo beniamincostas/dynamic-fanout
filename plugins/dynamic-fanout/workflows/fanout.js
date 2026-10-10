@@ -36,14 +36,25 @@ const DEFAULT_CALIB = {
   prices: { haiku: { in: 1, out: 5 }, sonnet: { in: 2, out: 10 }, opus: { in: 4, out: 20 }, fable: { in: 10, out: 50 } },
   cacheWrite: 1.25,
   cacheRead: 0.1,
-  // Measured in the 2026-10-09 smoke run: a crew agent's fixed prefix (system prompt +
-  // tool definitions) was 35-70k tokens in an MCP-heavy setup. Pass calib.baseCtx to tune.
-  baseCtx: 40000,
-  turns: 12,
-  outByEffort: { low: 4000, medium: 8000, high: 14000, xhigh: 22000, max: 32000 },
-  haikuOut: 3000,
+  // Calibrated on 119 real agents (2026-10-09 review + implementation run):
+  // - fixed prefix: allowlisted crew agents start at ~6-8k tokens; full-tool agents ~15k
+  //   before CLAUDE.md (which adds ctxTok, ~78k on a heavy subtree);
+  // - unbounded agents ran 28-65 turns and grew their context to 2.4-5.6x what they were
+  //   planned to read; crew agents are now turn-capped and told to read targeted ranges.
+  baseCtxLean: 8000,
+  baseCtx: 15000,
+  turnsBase: 10,
+  tokPerTurn: 2500,
+  effortTurns: { low: 0.6, medium: 0.8, high: 1.0, xhigh: 1.3, max: 1.6 },
+  outPerTurn: { low: 600, medium: 1000, high: 1500, xhigh: 1800, max: 2200 },
+  haikuOutPerTurn: 500,
+  readFactor: 3,
+  ultraReadFactor: 4,
+  ultraTurnCap: 80,
+  caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
   inspectorIn: 12000,
   verifierInFrac: 0.5,
+  scale: 1,
 }
 
 const mr = m => MODELS.indexOf(m)
@@ -59,8 +70,8 @@ function calibrate(c) {
   for (const k of Object.keys(c)) {
     if (k === 'prices' && c.prices && typeof c.prices === 'object') {
       for (const m of Object.keys(c.prices)) K.prices[m] = { ...(K.prices[m] || {}), ...c.prices[m] }
-    } else if (k === 'outByEffort' && c.outByEffort && typeof c.outByEffort === 'object') {
-      K.outByEffort = { ...K.outByEffort, ...c.outByEffort }
+    } else if (['effortTurns', 'outPerTurn', 'caps'].includes(k) && c[k] && typeof c[k] === 'object') {
+      K[k] = { ...K[k], ...c[k] }
     } else if (typeof c[k] === 'number' && k in K) {
       K[k] = c[k]
     }
@@ -107,29 +118,62 @@ function normPath(p) {
   return String(p || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/{2,}/g, '/').replace(/\/$/, '')
 }
 
+// Map a cited path onto the unit's scope list: an exact/suffix match first, then a unique
+// basename match ('fanout.js' -> '/abs/.../workflows/fanout.js'); otherwise unchanged.
+function toScope(file, scope) {
+  const f = normPath(file)
+  if (!f || !Array.isArray(scope) || !scope.length) return file
+  const exact = scope.find(x => normPath(x) === f)
+  if (exact) return exact
+  const hits = scope.filter(x => pathMatch(x, f))
+  return hits.length === 1 ? hits[0] : file
+}
+
 function pathMatch(a, b) {
   const x = normPath(a), y = normPath(b)
   if (!x || !y) return false
   return x === y || x.endsWith('/' + y) || y.endsWith('/' + x)
 }
 
-function outTok(cell, K) {
+// Turns grow with what an agent has to read and with its effort; a hard cap (the agent
+// file's maxTurns) bounds them. Measured: ~10 + in/2.5k turns at high effort.
+function turnsFor(cell, inTok, K, cap) {
   if (!cell) return 0
-  if (cell.model === 'haiku') return K.haikuOut
-  return K.outByEffort[cell.effort] || K.outByEffort.medium
+  const e = cell.model === 'haiku' ? 0.6 : (K.effortTurns[cell.effort] || 1)
+  const t = Math.max(2, Math.round((K.turnsBase + (inTok || 0) / K.tokPerTurn) * e))
+  return cap ? Math.min(cap, t) : t
 }
 
-// One agent: the context is written to cache once and re-read on every later turn;
-// it grows as the agent reads, so later turns see on average half of `inTok`.
-function estUsd(cell, inTok, ctxTok, K) {
+function outTok(cell, K, turns) {
+  if (!cell) return 0
+  const per = cell.model === 'haiku' ? K.haikuOutPerTurn : (K.outPerTurn[cell.effort] || K.outPerTurn.medium)
+  return per * (turns || turnsFor(cell, 0, K))
+}
+
+// One agent. Its context starts at the fixed prefix (+ CLAUDE.md if kept) and grows to
+// prefix + readFactor·in as it reads; everything is written to cache once, and every turn
+// re-reads the context so far (on average half the growth). o: {lean, cap, readFactor, turns}.
+function estUsd(cell, inTok, ctxTok, K, o) {
+  o = o || {}
   if (!cell) return 0
   const p = K.prices[cell.model]
   if (!p) return 0
-  const full = K.baseCtx + (ctxTok || 0) + (inTok || 0)
-  const avg = K.baseCtx + (ctxTok || 0) + (inTok || 0) / 2
-  const input = full * p.in * K.cacheWrite + avg * Math.max(0, K.turns - 1) * p.in * K.cacheRead
-  const output = outTok(cell, K) * p.out
-  return round4((input + output) / 1e6)
+  const prefix = (o.lean ? K.baseCtxLean : K.baseCtx) + (ctxTok || 0)
+  const g = o.readFactor || K.readFactor
+  const turns = o.turns || turnsFor(cell, inTok, K, o.cap)
+  const last = prefix + g * (inTok || 0)
+  const avg = prefix + (g * (inTok || 0)) / 2
+  const usd = (last * p.in * K.cacheWrite + turns * avg * p.in * K.cacheRead + outTok(cell, K, turns) * p.out) / 1e6
+  return round4(usd * (K.scale || 1))
+}
+
+// Which plugin agent a unit runs on, and that agent's hard turn cap (its maxTurns).
+function typeKey(u) {
+  return u.role === 'implement' ? 'implementer' : u.ctx === 'keep' ? 'workerCtx' : u.v && u.v.T === 2 ? 'workerMcp' : 'worker'
+}
+const LEAN_TYPES = ['worker', 'skeptic', 'inspector']
+function agentOpts(key, K) {
+  return { lean: LEAN_TYPES.includes(key), cap: K.caps[key] || null }
 }
 
 function validate(a) {
@@ -223,8 +267,8 @@ function validate(a) {
       errors.push(`fb ${id}: fallback ${cellKey(u.fbCell)} is not strictly stronger than primary ${cellKey(u.cell)}`)
     }
     if (u.parity && !userOv) {
-      if (!(u.cell.model === S && u.cell.effort === E && u.ctx === 'keep')) {
-        errors.push(`parity ${id}: V0∧B2∧D≥1 must run as ultracode would — ${S}·${E} with ctx keep (got ${cellKey(u.cell)}, ctx ${u.ctx})`)
+      if (!(u.cell.model === S && u.cell.effort === E)) {
+        errors.push(`parity ${id}: V0∧B2∧D≥1 must run on the session cell as ultracode would — ${S}·${E} (got ${cellKey(u.cell)})`)
       }
       if (u.fbCell) errors.push(`parity ${id}: fb must be null — strengthen the check instead`)
     }
@@ -284,18 +328,26 @@ function price(a, V, K) {
   const inAvg = Number(ultra.inAvg) > 0 ? Number(ultra.inAvg) : 40000
   const ctxTok = Number(ultra.ctxTok) || 0
   const vIn = inAvg * K.verifierInFrac
-  const U = (Number(ultra.agents) || 0) * estUsd(ref, inAvg, ctxTok, K) + (Number(ultra.verifiers) || 0) * estUsd(ref, vIn, ctxTok, K)
+  // Ultracode's agents: session cell, full tools, CLAUDE.md, no turn cap, unbounded reading.
+  const ultraO = { lean: false, cap: K.ultraTurnCap, readFactor: K.ultraReadFactor }
+  const U = (Number(ultra.agents) || 0) * estUsd(ref, inAvg, ctxTok, K, ultraO) + (Number(ultra.verifiers) || 0) * estUsd(ref, vIn, ctxTok, K, ultraO)
+  const inspO = agentOpts('inspector', K)
+  const skepO = agentOpts('skeptic', K)
+  const workO = agentOpts('worker', K)
   let P = 0, parityP = 0, plannedOut = 0, plannedAgents = 0, rerouteSum = 0, floor = 0, b2Earmark = 0
   for (const u of V.units) {
     if (!u.cell || mr(u.cell.model) < 0) continue
-    u.estPrimary = estUsd(u.cell, u.in, u.ctxTokEff, K)
+    u.typeKey = typeKey(u)
+    u.o = agentOpts(u.typeKey, K)
+    u.turns = turnsFor(u.cell, u.in, K, u.o.cap)
+    u.estPrimary = estUsd(u.cell, u.in, u.ctxTokEff, K, u.o)
     let est = u.estPrimary
-    plannedOut += outTok(u.cell, K)
+    plannedOut += outTok(u.cell, K, u.turns)
     plannedAgents += 1
-    if (needsInspector(u)) { est += estUsd(V.inspCell, K.inspectorIn, 0, K); plannedOut += outTok(V.inspCell, K); plannedAgents += 1 }
-    if (u.rdCell && mr(u.rdCell.model) >= 0) { est += estUsd(u.rdCell, u.in, u.ctxTokEff, K); plannedOut += outTok(u.rdCell, K); plannedAgents += 1 }
+    if (needsInspector(u)) { est += estUsd(V.inspCell, K.inspectorIn, 0, K, inspO); plannedOut += outTok(V.inspCell, K, turnsFor(V.inspCell, K.inspectorIn, K, inspO.cap)); plannedAgents += 1 }
+    if (u.rdCell && mr(u.rdCell.model) >= 0) { est += estUsd(u.rdCell, u.in, u.ctxTokEff, K, u.o); plannedOut += outTok(u.rdCell, K, turnsFor(u.rdCell, u.in, K, u.o.cap)); plannedAgents += 1 }
     u.estUsd = round4(est)
-    u.repairUsd = u.fbCell && mr(u.fbCell.model) >= 0 ? estUsd(u.fbCell, u.in, u.ctxTokEff, K) : 0
+    u.repairUsd = u.fbCell && mr(u.fbCell.model) >= 0 ? estUsd(u.fbCell, u.in, u.ctxTokEff, K, u.o) : 0
     P += est
     if (u.parity) parityP += est
     if (u.fbCell) {
@@ -308,11 +360,12 @@ function price(a, V, K) {
   const vcfg = a.verify || {}
   const expected = Number.isInteger(vcfg.expected) ? Math.max(0, vcfg.expected)
     : a.depth === 'quick' ? Math.ceil(nUnits / 3) : a.depth === 'deep' ? nUnits : Math.ceil(nUnits / 2)
-  const verifyUsd = expected * estUsd(V.V3, vIn, 0, K)
-  const sweepUsd = V.rounds * estUsd(V.sweepCell, inAvg, 0, K)
-  const criticUsd = a.depth === 'deep' ? estUsd(V.criticCell, vIn, 0, K) : 0
+  const verifyUsd = expected * estUsd(V.V3, vIn, 0, K, skepO)
+  const sweepUsd = V.rounds * estUsd(V.sweepCell, inAvg, 0, K, workO)
+  const criticUsd = a.depth === 'deep' ? estUsd(V.criticCell, vIn, 0, K, workO) : 0
   P += verifyUsd + sweepUsd + criticUsd
-  plannedOut += expected * outTok(V.V3, K) + V.rounds * outTok(V.sweepCell, K) + (a.depth === 'deep' ? outTok(V.criticCell, K) : 0)
+  plannedOut += expected * outTok(V.V3, K, turnsFor(V.V3, vIn, K, skepO.cap)) + V.rounds * outTok(V.sweepCell, K, turnsFor(V.sweepCell, inAvg, K, workO.cap))
+    + (a.depth === 'deep' ? outTok(V.criticCell, K, turnsFor(V.criticCell, vIn, K, workO.cap)) : 0)
   plannedAgents += expected + V.rounds + (a.depth === 'deep' ? 1 : 0)
   const rate = typeof caps.rerouteRate === 'number' ? caps.rerouteRate : 0.1
   const capPct = typeof caps.reserveCapPct === 'number' ? caps.reserveCapPct : 20
@@ -325,7 +378,7 @@ function price(a, V, K) {
   if (typeof caps.ceilingUsd === 'number' && caps.ceilingUsd > 0) C = caps.ceilingUsd
   return {
     U: round4(U), P: round4(P), R: round4(R), C: round4(C), mult, parityP: round4(parityP),
-    b2Earmark: round4(b2Earmark), plannedOut, plannedAgents, expected, rounds: V.rounds,
+    b2Earmark: round4(b2Earmark), plannedOut, plannedAgents, expected, rounds: V.rounds, verifyUsd: round4(verifyUsd),
   }
 }
 
@@ -349,6 +402,11 @@ function moneyRails(a, V, M) {
   if (Number.isInteger(caps.maxAgents) && M.plannedAgents > caps.maxAgents) {
     V.errors.push(`caps: ${M.plannedAgents} planned agents exceed maxAgents ${caps.maxAgents}`)
   }
+  const unitUsd = V.units.reduce((t, u) => t + (u.estUsd || 0), 0)
+  const sShare = unitUsd > 0 ? V.units.filter(u => u.cell && u.cell.model === V.S).reduce((t, u) => t + (u.estUsd || 0), 0) / unitUsd : 0
+  if (['review', 'research'].includes(a.kind) && V.units.length >= 3 && sShare > 0.7) {
+    V.warnings.push(`routing: ${Math.round(sShare * 100)}% of planned work-unit spend runs on ${V.S}; split mechanical work (inventory, consistency, mapping, extraction) into sonnet units if you can`)
+  }
   if (M.plannedAgents > 25) V.warnings.push(`size: ${M.plannedAgents} planned agents (Claude Code flags workflows above 25)`)
 }
 
@@ -359,7 +417,7 @@ function buildCard(a, V, M) {
     units: V.units.map(u => ({
       id: u.id, role: u.role, vec: u.vec, cell: cellKey(u.cell), fb: u.fbCell ? cellKey(u.fbCell) : null,
       rd: u.rdCell ? cellKey(u.rdCell) : null, ctx: u.ctx, check: u.check, why: u.why, parity: u.parity,
-      estUsd: u.estUsd, override: u.override || null,
+      estUsd: u.estUsd, turns: u.turns, override: u.override || null,
     })),
     verify: { rungs: V.rungs, V3: cellKey(V.V3), V4: cellKey(V.V4), expected: M.expected },
     sweep: { rounds: V.rounds, cell: cellKey(V.sweepCell) },
@@ -807,8 +865,8 @@ const inAvg = Number(A.ultra && A.ultra.inAvg) > 0 ? Number(A.ultra.inAvg) : 400
 const tol = Number(A.reduce && A.reduce.tolCents) || 0
 const carry = A.carry || {}
 const money = {
-  workPool: M.C - M.R, reserve: M.R, b2Earmark: M.b2Earmark,
-  committed: Number(carry.committedUsd) || 0, rerouteUsd: Number(carry.rerouteUsd) || 0,
+  workPool: M.C - M.R - M.verifyUsd, reserve: M.R, b2Earmark: M.b2Earmark, verifyPool: M.verifyUsd,
+  committed: Number(carry.committedUsd) || 0, rerouteUsd: Number(carry.rerouteUsd) || 0, verifySpent: 0,
 }
 const out0 = budget.spent()
 const maxOut = A.caps && Number(A.caps.maxOutputTokens) > 0 ? Number(A.caps.maxOutputTokens) : Math.round(1.5 * M.plannedOut)
@@ -819,8 +877,16 @@ let claims = []
 const dropped = []
 const warnings = [...V.warnings]
 
+// The kill switch stops NEW WORK only. Planned verification of claims already produced
+// draws from its own reserve and is never cut by it: cutting checks saves nothing that was
+// not already spent, and costs quality.
 function blocked(est, pool, u) {
   if (budget.total && budget.remaining() < 0.25 * budget.total) return 'budget: native budget below 25% remaining'
+  if (pool === 'verify') {
+    if (money.verifySpent + est <= money.verifyPool + 1e-9) return null
+    if (money.committed + est > money.workPool + 1e-9) return 'budget: verification reserve and work pool exhausted'
+    return null
+  }
   if (budget.spent() - out0 > 0.75 * maxOut) return 'budget: kill switch (output above 75% of maxOutputTokens)'
   if (pool === 'reserve') {
     const hold = u && u.v && u.v.B === 2 ? 0 : b2Pending.size ? money.b2Earmark : 0
@@ -832,6 +898,7 @@ function blocked(est, pool, u) {
 }
 function commit(est, pool, cell) {
   if (pool === 'reserve') money.rerouteUsd += est
+  else if (pool === 'verify' && money.verifySpent + est <= money.verifyPool + 1e-9) money.verifySpent += est
   else money.committed += est
   const k = cellKey(cell)
   ledger.cells[k] = (ledger.cells[k] || 0) + 1
@@ -843,27 +910,35 @@ async function call(prompt, cell, o) {
   if (cell.model !== S) opts.model = cell.model
   if (cell.model !== 'haiku' && cell.effort) opts.effort = cell.effort
   if (o.agentType) opts.agentType = o.agentType
-  try { return await agent(prompt, opts) } catch (e) { return null }
+  try {
+    const r = await agent(prompt, opts)
+    if (r && o.agentType) typeOk.add(o.agentType)
+    return r
+  } catch (e) { return null }
 }
 
-// One retry without the custom agentType: covers a missing plugin agent or a transient error.
+// A plugin agent type that answered once in this run exists; keep it on a retry so its
+// turn cap and lean prefix still apply. Only a type never seen working is dropped (a missing
+// plugin agent), falling back to the default workflow subagent.
+const typeOk = new Set()
 async function callOnce(prompt, cell, o) {
   const r = await call(prompt, cell, o)
+  if (r && o.agentType) typeOk.add(o.agentType)
   if (r || !o.agentType) return r
-  return call(prompt, cell, { ...o, agentType: undefined })
+  return call(prompt, cell, typeOk.has(o.agentType) ? o : { ...o, agentType: undefined })
 }
 
 // worker carries only Read/Grep/Glob/Bash (no MCP schemas in its prefix); a T2 unit
 // (MCP or long tool loops) gets worker-mcp; ctx keep gets worker-ctx (all tools + CLAUDE.md).
-const unitAgentType = u => (u.role === 'implement' ? AT.implementer
-  : u.ctx === 'keep' ? AT.workerCtx
-  : u.v && u.v.T === 2 ? AT.workerMcp
-  : AT.worker)
+const unitAgentType = u => AT[typeKey(u)] || AT.worker
 
 function unitPrompt(u, attempt, mode) {
   const lines = [A.shared || '', '', `## Unit ${u.id}: ${u.role}`, u.brief, '']
   if (u.scope.files.length) lines.push('Scope: read these and list every file you actually read in files_read:', ...u.scope.files.map(f => `- ${f}`), '')
   lines.push(RULES)
+  const cap = u.o && u.o.cap
+  lines.push(`- Budget: about ${u.turns || 20} tool calls${cap ? ` (hard stop at ${cap})` : ''}. Find before you read: grep or glob first, then Read only the line ranges you need (offset/limit), not whole files; leave Scope only to resolve a reference. Keep your last 2 calls for the answer; if the budget runs out, return status "partial" with remaining[] instead of continuing.`)
+  lines.push('- Cite every file path exactly as it is written under Scope.')
   if (u.n) lines.push('', NUMBER_RULES)
   if (mode) lines.push('', mode)
   lines.push('', `⟦df:${u.id}:${attempt}⟧`)
@@ -873,10 +948,10 @@ function unitPrompt(u, attempt, mode) {
 async function inspect(u, res, n) {
   if (!res || !needsInspector(u)) return null
   const items = []
-  ;(res.findings || []).forEach((f, i) => (f.evidence || []).forEach((e, j) => items.push({ ref: `f${i}.e${j}`, file: e.file, line: e.line, quote: e.quote })))
+  ;(res.findings || []).forEach((f, i) => (f.evidence || []).forEach((e, j) => items.push({ ref: `f${i}.e${j}`, file: toScope(e.file, u.scope.files), line: e.line, quote: e.quote })))
   if (!items.length) return null
   const batch = items.slice(0, MAX_INSPECT_QUOTES)
-  const est = estUsd(V.inspCell, K.inspectorIn, 0, K)
+  const est = estUsd(V.inspCell, K.inspectorIn, 0, K, agentOpts('inspector', K))
   const tag = `⟦df:i:${u.id}:${n}⟧`
   const why = blocked(est, 'work', u)
   if (why) { ledger.inspectors.push({ tag, unit: u.id, quotes: batch.length, resolved: null, estUsd: 0, skipped: why }); return { total: batch.length, resolved: null, rate: null, skipped: why } }
@@ -945,19 +1020,19 @@ async function runUnit(u) {
   let kind = 'primary'
   if (promoted.has(cohortKey(u)) && u.fbCell) {
     const delta = Math.max(0, u.repairUsd - u.estPrimary)
-    if (!blocked(delta, 'reserve', u)) { money.rerouteUsd += delta; cell = u.fbCell; kind = 'promoted'; st.fbUsed = true }
+    if (!blocked(delta, 'reserve', u) && !blocked(u.estPrimary, 'work', u)) { money.rerouteUsd += delta; cell = u.fbCell; kind = 'promoted'; st.fbUsed = true }
   }
   const run = async (c, k, mode, o) => {
     attempt++
     const tag = `⟦df:${u.id}:${attempt}⟧`
-    const est = estUsd(c, u.in, u.ctxTokEff, K)
+    const est = estUsd(c, u.in, u.ctxTokEff, K, u.o)
     const pool = k === 'reroute' ? 'reserve' : 'work'
-    const why = k === 'promoted' ? null : blocked(est, pool, u)
+    const why = k === 'promoted' ? blocked(u.estPrimary, 'work', u) : blocked(est, pool, u)
     if (why) { L.attempts.push({ n: attempt, tag, cell: cellKey(c), kind: k, mode: mode || null, cls: 'refused', estUsd: 0 }); return { refused: why } }
     if (k === 'promoted') { money.committed += u.estPrimary; ledger.cells[cellKey(c)] = (ledger.cells[cellKey(c)] || 0) + 1 } else commit(est, pool, c)
     const res = await call(unitPrompt(u, attempt, mode ? modeText(mode, o) : null), c, {
       label: `${u.id}·${cellKey(c)}${k === 'primary' ? '' : '·' + k}`, phase: 'Work', schema: unitSchema(u),
-      agentType: o && o.noAgentType ? undefined : at,
+      agentType: o && o.noAgentType && !typeOk.has(at) ? undefined : at,
     })
     L.attempts.push({ n: attempt, tag, cell: cellKey(c), kind: k, mode: mode || null, cls: null, estUsd: round4(est) })
     return { res }
@@ -1038,7 +1113,7 @@ async function sweep() {
   const scopeFiles = [...new Set(V.units.flatMap(u => u.scope.files))]
   const seenKeys = new Set(claims.map(c => claimKey(c, ['file', 'line'])).filter(Boolean))
   for (let r = 1; r <= V.rounds; r++) {
-    const est = estUsd(V.sweepCell, inAvg, 0, K)
+    const est = estUsd(V.sweepCell, inAvg, 0, K, agentOpts('worker', K))
     const why = blocked(est, 'work')
     if (why) { dropped.push({ what: 'sweep rounds', count: V.rounds - r + 1, reason: why }); break }
     commit(est, 'work', V.sweepCell)
@@ -1089,10 +1164,10 @@ async function runBatch(b) {
     : [null]
   const verdictSets = []
   for (let i = 0; i < lenses.length; i++) {
-    const est = estUsd(b.cell, inAvg * K.verifierInFrac, 0, K)
-    const why = blocked(est, 'work')
+    const est = estUsd(b.cell, inAvg * K.verifierInFrac, 0, K, agentOpts('skeptic', K))
+    const why = blocked(est, 'verify')
     if (why) { verdictSets.push(null); dropped.push({ what: `verification ${b.id}${lenses.length > 1 ? ` lens ${i + 1}` : ''}`, count: b.claims.length, reason: why }); continue }
-    commit(est, 'work', b.cell)
+    commit(est, 'verify', b.cell)
     const tag = `⟦df:v:${b.id}:${i + 1}⟧`
     const list = b.claims.map(c => [
       `${c.cid} | ${c.severity} | ${c.title}`,
@@ -1152,7 +1227,7 @@ async function verify(all) {
 }
 
 async function critic(all) {
-  const est = estUsd(V.criticCell, inAvg * K.verifierInFrac, 0, K)
+  const est = estUsd(V.criticCell, inAvg * K.verifierInFrac, 0, K, agentOpts('worker', K))
   const why = blocked(est, 'work')
   if (why) { dropped.push({ what: 'completeness critic', count: 1, reason: why }); return [] }
   commit(est, 'work', V.criticCell)
@@ -1214,7 +1289,7 @@ const digest = {
   }),
   money: {
     U: round2(M.U), P: round2(M.P), R: round2(M.R), C: round2(M.C), parityBound: !!(A.caps && A.caps.parityBound),
-    committedUsd: round2(money.committed), rerouteUsd: round2(money.rerouteUsd), outputTokens: budget.spent() - out0,
+    committedUsd: round2(money.committed + money.verifySpent), rerouteUsd: round2(money.rerouteUsd), verifyUsd: round2(money.verifySpent), outputTokens: budget.spent() - out0,
     note: 'estimates from the price model; run scripts/ledger-cost.mjs for actuals. outputTokens counts output only',
   },
   warnings, dropped, invariants, critic: critique,

@@ -64,7 +64,7 @@ Classify the task: kind (research / review / data / implement), size, risk, ambi
 - ≥50% of the material is already in your context;
 - packing leaves 1 unit;
 - (after scouting, end of step 2) the reading volume is ≤80k tokens on a Sonnet master, ≤40k on Opus, ≤15k on Fable;
-- (after scouting) U < 3× your own planning + synthesis overhead, with U ≈ `ultra.agents` × the per-agent price in `references/economics.md` (Calibration card).
+- (after scouting) U < 3× your own planning + synthesis overhead, with U ≈ `ultra.agents` × the ultracode-style agent price in `references/economics.md` (Calibration card).
 
 Going solo is the biggest saving there is, and it is not a failure. Say so in one line and do the task.
 
@@ -79,17 +79,17 @@ Going solo is the biggest saving there is, and it is not a failure. Say so in on
   - **B, contradictions:** claims in your draft that the code or data contradicts. Re-check each value at its `file:line`.
 - Check each new item yourself with a spot-read before reporting it. Report it as found by lens A or B, and drop what does not hold up.
 
-Why: in a benchmark, a solo review cost under 0.15× ultracode, but it missed issues of exactly these two kinds: a failure that crosses files and time, and an input edge case. A generic Sonnet sweep did not recover them. Targeted lenses on the stronger model cost about $0.4–0.8 and aim at those blind spots.
+Why: in a benchmark, a solo review cost under 0.15× ultracode but missed exactly these two kinds (a failure across files and time, an input edge case); a generic Sonnet sweep did not recover them.
 
 ## 2. Scout and pack (at most 2 batched turns)
 
 1. **Scout with Glob / `grep -l` / `grep -c` / `wc -c` / `git ls-files`.** Tokens ≈ bytes / 4, and count the CLAUDE.md files on each unit's path. Never read what a worker will read; that is paid twice.
-2. In the same batch, run `node <scripts>/stats.mjs --summary <kind>` to get routing history for this kind of task.
+2. In the same batch, run `node <scripts>/stats.mjs --summary <kind>` for routing history. If it prints a `CALIB` line, pass that object as `args.calib` (it carries `scale`, the measured actual ÷ estimate ratio).
 3. Exclude `.env`, key files, duplicate copies of the same code (vendored or mirrored folders) and generated `output/`, unless one of them is the target.
 4. **Pack:**
    - split a unit off only if its work is ≥2× its path's fixed context;
    - keep same-subtree units together, so a nested CLAUDE.md is paid once;
-   - cap each agent at ~120k tokens of reading or 25 files.
+   - keep each agent's planned turns under its cap: on a worker ≲50k tokens of reading at high, ≲65k at medium, ≲95k at low, or 25 files.
 5. **Count U honestly:**
    - `ultra.agents` = how many agents ultracode would spawn: one per independent question, dimension or file cluster;
    - `ultra.verifiers` ≈ one per ~3 expected findings;
@@ -105,7 +105,7 @@ At ≥3 units, read `references/routing.md` and follow it. In short:
 - **Model buys capability, effort buys thoroughness.** Pick the lowest cell that succeeds **first time**. When unsure, use W·medium plus an objective check, and never guess low.
 - **Parity cell:**
   - Applies when V0 ∧ B2 ∧ D≥1, i.e. an error would be invisible *and* consequential.
-  - The unit runs exactly as ultracode would: S·E_ref, `ctx:'keep'`, `fb:null`, claims at V3.
+  - The unit runs on ultracode's cell: S·E_ref, `fb:null`, claims at V3. The rail checks only the cell and `fb`; `ctx` stays `omit` (see Context).
   - Every other unit must name the check that catches its mistakes. What each `check` token does in the foreman:
     - `quote` adds the evidence inspector; `rederive` is required with `n:1`; `none` is parity-only;
     - `V2`/`V3`/`V4` set a per-unit verification **floor**: claim rung = max(`verify.rungs[severity]` + bump, floor), parity ≥ V3, cap V4;
@@ -115,10 +115,15 @@ At ≥3 units, read `references/routing.md` and follow it. In short:
   - On a Fable session only parity units may use a fable cell (`p` or `fb`); everything else stays ≤ W = opus.
   - It is `null` for parity units, superseding units, peripheral B0 units, and when `p` ≥ W·high (strengthen the check instead).
   - Units that carry the answer get a non-null `fb`, unless `p` ≥ W·high.
-- **Context:** `ctx:'omit'` is the default; put the unit's constraints in the shared **rules capsule**. Use `ctx:'keep'` for parity and G2 units.
+- **Context:** `ctx:'omit'` is the default, parity included: put the unit's constraints in the shared **rules capsule** plus `path:line` pointers into the CLAUDE.md sections it may need (read on demand). Use `ctx:'keep'` only for a G2 unit whose traps the capsule cannot state.
 - **Verifiers:** a verifier's model must be ≥ every non-parity unit's `p` **and** `fb` model. Declare the rungs (`verify.rungs`) and `verify.cells.V3/V4` (default W·high).
 - **Cells:** use ≤2 cells per stage so agents share a prompt cache. Merge the smallest cell *up*, never down.
 - **`why`:** every card carries one (≤140 chars) naming the feature that decided its route.
+
+**Bounded agents.** Every crew agent is turn-capped (its agent file's `maxTurns`: worker 30, worker-mcp 35, worker-ctx 30, implementer 60, skeptic 12, inspector 6), and its prompt carries the budget, find-before-read and "return `partial` with `remaining[]`" rules. Unbounded agents were the 0.1.0 overrun (28–65 turns, 2.4–5.6× the planned reading). So:
+- **Size units so planned turns fit the cap** (≈ (10 + in/2.5k) × effort factor; the card prints each unit's `turns`). Planned turns at the cap mean the unit is too big: split it.
+- **Peel mechanical work into sonnet units** (inventory, consistency, mapping, extraction); keep judgement on W. The foreman warns when >70% of a review/research plan runs on S.
+- **`high` effort only when D2 ∧ V≤1 ∧ B2.** A B1 unit starts at W·medium with `fb` W·high, so the one re-route exists.
 
 Write the **shared preamble** (args `shared`) once: task goal, the rules capsule (the CLAUDE.md constraints `ctx:'omit'` units still need), output expectations; no file contents, no credentials. Details: `references/routing.md`. Write each **brief** as pointers (paths, line ranges, questions), ≤120 words. Build the args exactly as `references/workflow.md` specifies (args v2).
 
@@ -128,10 +133,10 @@ If you are unsure whether the plan passes the rails or the money check, launch i
 
 ```
 dynamic-fanout · review · standard · master opus·max · S opus W opus · E_ref xhigh (default)
-ultracode basis: 6 dimensions × 1 agent + 2 verifiers · U $10.92 · plan P $2.54 + R $0.86 = 0.31×U (ceiling 0.5×U)
-u1      sonnet·medium → opus·high   omit · quote      C1, quotes catch misses
-u2-u3   opus·xhigh (parity) → —     keep · V3         recall unverifiable; marks invoices paid
-u4      sonnet·low → sonnet·medium  omit · set        grep set-equality
+ultracode basis: 8 = 5 clusters + 3 dimensions, 4 verifiers · U $40.53 · plan P $9.29 + R $2.69 = 0.30×U (ceiling 0.5×U)
+u1      opus·xhigh (parity) → —     omit · V3     30t  recall unverifiable; marks invoices paid
+u2-u4   sonnet·medium → opus·high   omit · quote  18-24t  C1, quotes catch misses
+u6      sonnet·low → sonnet·medium  omit · set    10t  grep set-equality
 verify: blocker/high→V3 (opus·high), medium→V2 · topK 12 · sweep 1
 override: --route u4=opus·high · --ceiling 5 · --solo · or just let it run
 ```
@@ -156,7 +161,7 @@ If the session is Sonnet at standard or deep depth, add the line `advisory: /mod
   - Use the effort-pinned agents with the model passed per call: `dynamic-fanout:worker-low|worker-medium|worker-high`, `worker-mcp` for T2 (MCP or long tool loops), `worker-ctx` (medium) / `worker-ctx-xhigh` for `ctx:'keep'`, `skeptic` / `skeptic-high`, `inspector` (for `quote` checks and B2 units), `implementer-medium|implementer-high`. `worker`/`worker-low|medium|high` and `skeptic`/`skeptic-high` carry a plain `Read, Grep, Glob, Bash` tool allowlist (cheaper: no MCP schemas in the prefix); `worker-mcp` and `worker-ctx*` get every tool minus `Edit, Write, NotebookEdit, Agent`.
   - Snap the card's effort **up** to the nearest file and log `snap`, but never above E_ref: if no file fits, take the nearest one at or below E_ref and log `snap-down`. A parity card with no exact file runs with the default agent type and an explicit effort (or in-context).
   - Apply the failure classes yourself (workflow.md table), with the same one-re-route limit.
-- **Implement:** follow `playbooks/implement.md`. You write an inline Workflow script, with a baseline test run first. Its diff review reuses `dynamic-fanout:fanout` with `kind: 'review'`.
+- **Implement:** follow `playbooks/implement.md`. You write an inline Workflow script, with a baseline test run first. Its diff review reuses `dynamic-fanout:fanout` with `kind: 'review'`. Implementation has its **own envelope**: dry-run price each pass (`kind:'implement'`, `dryRun:true`), budget ×1.5 per theme, ≤2 passes + 1 diff review, then ask. For several themes after a review, recommend a **fresh session per theme**: this skill runs at `effort: max`, and one long session re-reads its growing context on every turn.
 
 ## 6. Review the digest (exceptions only, at most one turn)
 
@@ -170,6 +175,7 @@ Read `digest`. Read `results.claims` only to forward it to `stage:'verify'` or f
 | `brief` | rewrite the brief once as a new unit (`supersedes`, `fb:null`, paid from the leftover reserve), or ask the user |
 | `unverified`, B2 | do it inline if ≤30k tokens (≤2 per run); otherwise report it as UNVERIFIED with the reason |
 | `unverified`, B≤1 | report it as UNVERIFIED with the reason |
+| claims UNVERIFIED `budget` (verification cut) | do **not** re-verify them yourself; run `stage:'verify'` with those `claims` and `carry` |
 | `dropped` / `invariants` failing | report them; never silently drop |
 | data unit with `numbersConflict` (UNVERIFIED, fb null, tie-out mismatch) | report both derivations from `results.units[id].numbersConflict` (`primary`, `rederived`, `fallback:null`) |
 
@@ -181,15 +187,15 @@ The Workflow tool result (or its task notification) names the output file, the t
 
 ```bash
 node <base>/../../scripts/check-evidence.mjs <output-file> --root <session-cwd> --write <output-file>.audited.json \
- && node <base>/../../scripts/ledger-cost.mjs <transcript-dir> \
- && node <base>/../../scripts/stats.mjs update <output-file>.audited.json --kind <kind>
+ && node <base>/../../scripts/ledger-cost.mjs <transcript-dir> --json > <output-file>.cost.json \
+ && node <base>/../../scripts/stats.mjs update <output-file>.audited.json --kind <kind> --ledger <output-file>.cost.json
 ```
 
 **Deep runs** have two outputs. Run `check-evidence` on the verify-stage output, `ledger-cost` on both transcript dirs, and `stats update` on the work-stage output with its `results.claims` replaced by the audited verify-stage claims (a one-line `node -e` merge into `<work-output>.merged.json`). The verify output alone has no units, and stats skips it.
 
 - `check-evidence` only ever **downgrades**: a claim whose quote does not exist becomes UNVERIFIED.
-- `ledger-cost` gives the actual dollars per unit and per model.
-- `stats` records first-pass success per cohort, so the next run routes better.
+- `ledger-cost` gives the actual dollars per unit and per model (read the `.cost.json`).
+- `stats` records first-pass success per cohort, and with `--ledger` the actual ÷ estimate ratio that becomes the next run's `CALIB` `scale`.
 - Spot-read at most 3 snippets of ≤60 lines, and only to settle a split V4 verdict or a high-impact conflict.
 
 **Report**, in this order:
