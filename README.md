@@ -23,6 +23,16 @@ A deterministic foreman workflow enforces the cards:
 
 Code never picks a model or an effort.
 
+### 0.1.3: implement as its own workflow
+
+The master used to hand-write the implement loop as an inline Workflow script from the
+playbook, nearly the same code twice. 0.1.3 moves it into code:
+`dynamic-fanout:implement` (`workflows/implement.js`) prices itself through one foreman
+dry run, runs each theme serially with at most one repair pass on its pre-chosen
+fallback, meters every launch against a cost ceiling, and ends with one independent
+whole-diff review on a new `dynamic-fanout:reviewer` agent. A real cycle (7 serial
+test-first fixes) cost $10.13 against a $20–25 estimate. Details: `CHANGELOG.md`.
+
 ### 0.1.2: per-role calibration
 
 A validation run on 0.1.1 (8 review units) cost $21.59 total against a $15.29 crew

@@ -106,6 +106,7 @@ The foreman picks each unit's agent type; the master never names one directly. I
 | 3 | else vector `T === 2` (MCP or long tool loops) | `workerMcp` → `dynamic-fanout:worker-mcp` | 35 | 15k |
 | 4 | else | `worker` → `dynamic-fanout:worker` | 30 | 8k (lean) |
 | — | verifiers / inspectors | `skeptic` / `inspector` | 12 / 6 | 8k (lean) |
+| — | `dynamic-fanout:implement`'s whole-diff review | `dynamic-fanout:reviewer` | 30 | 8k (lean) |
 
 The cap is the agent file's `maxTurns` and the same number `price()` uses (`calib.caps`).
 Each unit's planned turns = min(cap, round((10 + in/2500) × effort factor)); the card
@@ -366,8 +367,13 @@ separate `stage: 'verify'` call with those `claims`.
 ## Implement mode
 
 The foreman does not edit files, and `kind: 'implement'` is only accepted with
-`dryRun: true` (fanout prices and validates the card, it never runs it). For a real
-implement run, write an inline Workflow script from `playbooks/implement.md`, using the
-same card format and rails, and call
-`workflow('dynamic-fanout:fanout', { ...args, kind: 'review', ... })` for the diff
+`dryRun: true` (fanout prices and validates the card, it never runs it). A real implement
+run is a separate workflow, `dynamic-fanout:implement` — see `playbooks/implement.md` for
+its args (v1) and recipe. It prices itself through one `dynamic-fanout:fanout` dry run
+(`kind: 'implement'`), runs each theme serially with at most one repair pass on the
+theme's pre-chosen `fb`, meters every launch against `caps.ceilingUsd`, and ends with one
+whole-diff review on the `dynamic-fanout:reviewer` agent. For a shape that workflow's args
+genuinely cannot express, the master may instead write an inline Workflow script from the
+same playbook's fallback recipe and call
+`workflow('dynamic-fanout:fanout', { ...args, kind: 'review', ... })` for its diff
 review (one nesting level is allowed).

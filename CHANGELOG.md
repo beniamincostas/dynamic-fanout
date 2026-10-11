@@ -1,5 +1,57 @@
 # Changelog
 
+## dynamic-fanout 0.1.3 — 2026-10-11
+
+Implement mode had been a playbook recipe the master hand-wrote into an inline Workflow
+script on every run — nearly the same implementation workflow twice. 0.1.3 moves the cost
+envelope and the pass cap out of prose and into code: `dynamic-fanout:implement`
+(`workflows/implement.js`), a dedicated workflow the master calls with args v1 instead of
+writing a script.
+
+A real implementation cycle on a live service measured it: 7 serial test-first fixes
+(opus·medium implementers, one repair pass each on a pre-chosen `fb`, full-suite gate)
+cost **$10.13** against a **$20–25** estimate and worked well. Two of the seven themes
+needed their repair pass (one first attempt returned nothing). The suite grew by 46 tests
+across the run. The final whole-diff review, run on the 'skeptic' agent, hit its 12-turn
+cap before it could report and needed a nudge mid-review to finish — a whole-PR review
+needs a bigger budget than checking one claim.
+
+### Added
+- **`dynamic-fanout:implement` workflow** (`workflows/implement.js`): args v1 (`session`,
+  `worktree`, `testCmd`, `commitPrefix`, `baseline`, `shared`, `themes[]`, `review`,
+  `caps`). It prices every theme through one `dynamic-fanout:fanout` dry run
+  (`kind: 'implement'`), so implement and fan-out estimates share one price model; runs
+  each theme serially, test-first, on `dynamic-fanout:implementer`; gates on the baseline
+  suite staying green; and allows **at most one repair pass per theme**, on that theme's
+  own pre-chosen `fb`, never a third attempt.
+- **`dynamic-fanout:reviewer` agent** (`agents/reviewer.md`, 30-turn cap): an independent
+  whole-diff review over the run's own commits, judging each intended change
+  FIXED/PARTIAL/NOT FIXED/NOT CHECKED with file:line and test coverage, naming
+  regressions and new risks, and closing with SAFE TO MERGE or NEEDS CHANGES. Priced
+  conservatively at `1.5×` the largest single theme estimate and reserved out of the
+  budget before any theme launches, so a repair pass can never spend the money the merge
+  gate needs.
+- **Per-launch metering against a hard ceiling**: every theme attempt and the review are
+  checked against `caps.ceilingUsd` as they run (not only once at plan time); a launch
+  that no longer fits is refused with reason `budget` instead of running over.
+
+### Changed
+- **`skills/dynamic-fanout/references/playbooks/implement.md`** rewritten around the
+  shipped workflow: the args v1 contract, the worktree + baseline recipe, the priced card
+  per theme, the envelope now enforced in code, and the reviewer agent. The old
+  "write an inline Workflow script" recipe is kept only as a short fallback, for a shape
+  args v1 genuinely cannot express (for example themes that must run in parallel
+  worktrees).
+- **`SKILL.md`** (Launch, implement mode): the master now builds implement args v1 and
+  calls `Workflow({ name: 'dynamic-fanout:implement', args })`, `dryRun` first, shows the
+  priced card, confirms with the user, and asks again before any merge or deploy — rather
+  than writing the inline script itself.
+- **`references/workflow.md`**: a short `dynamic-fanout:implement` section describing the
+  real run (the dry-run-only `kind:'implement'` card stays fanout's own pricing tool),
+  and `dynamic-fanout:reviewer` added to the agent-type table (30-turn cap, lean prefix).
+- **`references/routing.md`**: whole-diff reviews route to the reviewer agent, not a
+  skeptic — a skeptic's 12-turn cap suits one claim's evidence, not a whole PR.
+
 ## dynamic-fanout 0.1.2 — 2026-10-10
 
 Validation run on 0.1.1 (a review, 8 units, 69 findings: 7 high / 34 medium): the plan
