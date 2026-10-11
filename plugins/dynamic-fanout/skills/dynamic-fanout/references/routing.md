@@ -103,6 +103,10 @@ Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs 
    - **`null`** when `p` ≥ W·high (strengthen the check instead), and for parity units,
      superseding units and peripheral B0 units;
    - units that carry the answer always get a non-null `fb` unless `p` ≥ W·high.
+6a. **Whole-diff reviews use the reviewer agent, not the skeptic.** A single claim's
+   verification is a skeptic call (12 turns, built for one claim's evidence); a whole-PR
+   review over a run's commits is `dynamic-fanout:implement`'s own `dynamic-fanout:reviewer`
+   (30 turns) — see `playbooks/implement.md`.
 7. **Verifiers** (declare `verify.rungs` per severity and `verify.cells`):
    - the verifier's model ≥ every producer model it checks (rail);
    - V2 = the producer's model·medium (implicit); V3/V4 = W·high; parity claims run on S·high;
