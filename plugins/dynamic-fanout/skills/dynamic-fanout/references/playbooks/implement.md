@@ -1,140 +1,148 @@
 # Playbook — implement
 
-Load this only when `kind: 'implement'`. **The foreman does not edit files**, so the master
-writes one inline Workflow script from this recipe, using the same card format and rails.
+Load this only when `kind: 'implement'`. As of 0.1.3 the implement loop is its own
+workflow, `dynamic-fanout:implement` (`workflows/implement.js`) — the master builds args
+v1 and calls it; it is no longer a hand-written inline script.
 
 ## When this kind applies
 
 - Code or config must change (feature, fix, mapping, fixtures) in ≥2 independent units;
   one coherent change is solo.
-- The run card **always pauses** in implement mode: show cells, files, gate and worktree
-  decision, and wait for `go`.
+- The run **always pauses** before the real work: show cells, files, the priced card and
+  the worktree decision, and wait for `go` (the workflow itself refuses to start without
+  either `dryRun` first or an explicit `confirmed: true` once the estimate clears
+  `pauseUsd`).
 
-## The implementation envelope
+## The implementation envelope (now enforced in code)
 
-In 0.1.0 implementation had no cost envelope: the first real run spent ~$226 over 9
-implement launches after a review that cost $58.58. Each theme now gets a budget before
-any agent runs:
+0.1.0 had no cost envelope: the first real run spent ~$226 over 9 implement launches
+after a review that cost $58.58. The workflow now prices and meters every launch itself:
 
-1. **Price every pass with a dry run** (`kind: 'implement'`, `dryRun: true`, the pass's
-   unit cards) and print the estimate (P, and per unit `estUsd` and `turns`).
-2. **Per-theme budget = that estimate × 1.5.** Print it on the run card.
-3. **At most 2 implement passes + 1 diff review per theme.** Then stop and ask the user,
-   with what is left and why; never a third pass on your own.
-4. **After each pass, run `ledger-cost`** on its transcript dir and compare actual with
-   the estimate. If the pass already used more than the theme budget, stop and ask.
-5. **One fresh session per theme** for multi-theme work (for example the themes a review
-   produced): this skill runs at `effort: max`, and one long session re-reads its growing
-   context on every turn (the first run's master cost ~$78, mostly that). Hand each
-   theme over as a short brief: findings, files, the baseline command.
+1. **It prices every theme through the foreman** (`kind: 'implement'`, `dryRun: true`,
+   one unit card per theme) before anything runs, and refuses to start if the estimate
+   exceeds `caps.ceilingUsd`.
+2. **The reviewer's cost is reserved up front**: estimate = Σ theme estimates +
+   `1.5 × max(theme estimate)` for the whole-diff review, and the review's share is held
+   back from the budget while themes run, so a repair pass can never eat the money the
+   merge gate needs.
+3. **At most one repair pass per theme, then stop.** A theme that fails twice (or once
+   with `fb: null`) is reported `failed`/`refused`; the workflow never attempts a third
+   pass on its own.
+4. **Every launch is metered against the ceiling** as it runs (not only at the start): a
+   theme or the review that no longer fits the remaining budget is refused with reason
+   `budget`, not launched and then left to overrun.
+5. **One independent whole-diff review** (`dynamic-fanout:reviewer`, read-only, 30 turns)
+   runs once at least one theme landed, over every commit the run made — not a second
+   fan-out, and not one of the implementers reviewing its own work.
+6. **One fresh session per theme** is still the right call for multi-theme work (for
+   example the themes a review produced): this skill runs at `effort: max`, and one long
+   session re-reads its growing context on every turn (the first run's master cost ~$78,
+   mostly that). Hand each theme over as a short brief: findings, files, the baseline
+   command.
 
-Size implementer units like crew units: the implementer's cap is 60 turns, and planned
-turns = min(60, (10 + in/2.5k) × effort factor) include its edit and test calls.
+A real cycle (0.1.3): 7 serial test-first fixes (opus·medium implementers, one repair
+pass on a pre-chosen `fb`, full-suite gate) cost **$10.13** against a **$20–25** estimate.
+Two of the seven needed their repair pass (one first attempt returned nothing); the final
+whole-diff review needed its own turn budget — the reviewer agent now gets 30 turns,
+where a single-claim skeptic has 12 — and it still needed a nudge mid-review the first
+time the cap was too tight. Size the review budget for a whole PR, not for one claim.
 
 ## Recipe (master, in order)
 
-1. **Baseline test run first** (master, one Bash call): record the command and the ids of
-   tests already failing. The gate is **"no new failures"**, so pre-existing reds never
-   trigger a re-route.
-2. **Validate and price the cards**: call `dynamic-fanout:fanout` with `kind: 'implement'`,
-   `dryRun: true` and the unit cards. It runs the rails and prices U/P/R/C without
-   launching; this is the pass's envelope (above).
-3. **Isolation decision.** Use a worktree only if **all** hold: inside a git repo, clean
-   tree, the units' files are disjoint, and ≥3 units. Otherwise run the units **serially
-   in place** — a worktree costs setup and a merge, and pays off only for parallel writers.
-4. **Run the inline script** below. Each implementer (`dynamic-fanout:implementer`,
-   `ctx: 'keep'`) edits its scope and runs the tests **inside its own run**, then returns
-   the failing test ids.
-5. **Gate** in code: new failures = returned failing − baseline failing. A gate failure
-   spends the unit's **one** re-route: `fb` in `repair` mode with the failing output. A
-   second failure, or `fb: null` → UNVERIFIED → master. Never a third attempt.
-6. **Diff review**: one reviewer unit on the V3 cell (W·high) over the combined changed
-   files, via `workflow('dynamic-fanout:fanout', { ...reviewArgs, kind: 'review' })`.
-   Its blocker/high findings are verified at V3. One nesting level is allowed.
+1. **Baseline test run first** (master, one Bash call, in the worktree): record `passed`
+   and `skipped` counts — not individual failing test ids. The gate is **the suite stays
+   green against this baseline**, so pre-existing reds never trigger a re-route, and a
+   theme that quietly removes or skips a test is flagged (`suite passed < baseline`).
+2. **Isolation decision.** Use a worktree only if **all** hold: inside a git repo, clean
+   tree, the themes' files are disjoint, and ≥3 themes. Otherwise run the themes
+   **serially in the current worktree** — `dynamic-fanout:implement` always runs themes
+   serially either way; a worktree only changes whether the branch is shared with other
+   work.
+3. **Build args v1** (below) — one theme card per independent change, the test command,
+   the commit prefix, the baseline, and `caps.ceilingUsd`.
+4. **Call it with `dryRun: true` first.** Read the returned `estimate` and `card`; if
+   `reason` is `'money'` (over ceiling) or `'rails'` (shape errors), fix the plan — drop
+   or merge themes, lower effort, or raise the ceiling with the user — and dry-run again.
+5. **Show the priced card and get `go`.** This mode always pauses; never launch the real
+   run without the user's go-ahead, and never merge or deploy its result without asking
+   again afterward.
+6. **Launch for real** (same args, `confirmed: true` if the estimate is also over
+   `pauseUsd`). The workflow runs each theme (test-first, one repair pass on its `fb`,
+   gated on the baseline), then the whole-diff review when at least one theme landed.
 7. **Master closes**: merge worktree branches (if any), re-run the baseline once on the
-   merged tree, then the step-7 close scripts and the ledgers (SKILL.md §7); report actual
-   vs the theme budget.
+   merged tree, then the step-7 close scripts and the ledgers (SKILL.md §7); report the
+   workflow's own `money.committedUsd` vs `ceilingUsd`, and the reviewer's verdict
+   (`SAFE TO MERGE` / `NEEDS CHANGES`) before proposing any merge.
 
 ## Typical vectors and cells (Opus session, E_ref = xhigh)
 
-| Unit | Vector | p → fb | ctx · check | Why |
-|---|---|---|---|---|
-| Add a column + fixtures to an exact spec | D1 A0 T1 C1 V2 B1 G0 | sonnet·medium → opus·high | keep · tests | the tests are the check |
-| Category mapping with a default-bucket fallback | D2 A1 T1 C1 V1 B2 G1 | opus·high → null | keep · tests+V3 | booked; its own tests share its blind spots |
-| Rename/move across call sites | D0 A0 T1 C1 V2 B0 G0 | sonnet·low → sonnet·medium | keep · tests+set | grep count + tests catch misses |
+| Theme | Vector | p → fb | Why |
+|---|---|---|---|
+| Add a column + fixtures to an exact spec | D1 A0 T1 C1 V2 B1 G0 | sonnet·medium → opus·high | the tests are the check |
+| Category mapping with a default-bucket fallback | D2 A1 T1 C1 V1 B2 G1 | opus·high → null | booked; its own tests share its blind spots |
+| Rename/move across call sites | D0 A0 T1 C1 V2 B0 G0 | sonnet·low → sonnet·medium | grep count + tests catch misses |
 
 - B2 implementation logic → W·high; B1 logic → W·medium with `fb` W·high; mechanical
-  edits to an exact spec → sonnet. The implementer always keeps CLAUDE.md: project rules
-  (formats, read-only clients) live there.
-- `check` contains `tests` on every unit; B2 units add `V3` because a unit's own tests
-  share its blind spots.
+  edits to an exact spec → sonnet.
+- Every theme keeps CLAUDE.md (`ctx: 'keep'`): project rules (formats, read-only
+  clients) live there, and the implementer agent always runs with full context.
 
-## Inline script skeleton
-
-Plain JS, literal `meta`, no `Date.now()`/`Math.random()`; cells come only from the cards.
+## Args v1 (`dynamic-fanout:implement`)
 
 ```js
-export const meta = {
-  name: 'df-implement',
-  description: 'dynamic-fanout implement: card-routed edits, test gate, one diff review',
-  phases: [{ title: 'Implement' }, { title: 'Review' }],
+{
+  v: 1,
+  session: { S, W, refEffort },
+  worktree: '/abs/path',              // already on the work branch
+  testCmd: 'npm test',                // exits 0 when the suite is green
+  commitPrefix: 'fix(scope):',
+  baseline: { passed: 42, skipped: 1 },
+  shared: '<preamble + rules capsule, identical for every theme>',
+  themes: [{
+    id: 't1', vec: 'D1 A0 T1 C1 V2 B1 G0', why: '<=140 chars',
+    brief: '<pointers: paths, line ranges, the failing behaviour>',
+    in: 24000,                        // optional; est. tokens this theme reads
+    p: { model?, effort },            // primary cell; model omitted = S
+    fb: { model?, effort } | null,    // the one repair cell, strictly stronger than p
+  }],
+  review: { enabled: true, cell: { model?, effort } },  // default W·min(high, refEffort)
+  caps: { ceilingUsd: 15, pauseUsd: 10 },
+  dryRun: false, confirmed: false,
 }
-// args: { shared, units:[card+brief], baseline:{ cmd, failing:[] }, worktree:bool, reviewArgs }
-const A = args
-const RESULT = { type: 'object', required: ['status', 'files_changed', 'tests', 'summary'],
-  properties: {
-    status: { type: 'string', enum: ['ok', 'partial', 'blocked'] }, blocked_reason: { type: 'string' },
-    files_changed: { type: 'array', items: { type: 'string' } },
-    tests: { type: 'object', required: ['cmd', 'failing'], properties: {
-      cmd: { type: 'string' }, failing: { type: 'array', items: { type: 'string' } } } },
-    summary: { type: 'string', maxLength: 300 } } }
-
-const opts = (cell, u, n, typed = true) => ({
-  ...(cell.model ? { model: cell.model } : {}),          // omitted = session model S
-  effort: cell.effort,                                    // implementers are never haiku
-  ...(typed ? { agentType: 'dynamic-fanout:implementer' } : {}),
-  ...(A.worktree ? { isolation: 'worktree' } : {}),
-  schema: RESULT, label: `${u.id}#${n}`, phase: 'Implement' })
-const prompt = (u, n, extra) => [A.shared, u.brief, extra || '',
-  `Run \`${A.baseline.cmd}\` after editing; report every failing test id.`,
-  `⟦df:${u.id}:${n}⟧`].join('\n\n')                     // tag stays the last line
-const newFails = r => (r?.tests?.failing || []).filter(t => !A.baseline.failing.includes(t))
-
-async function runUnit(u) {
-  let n = 1, r = await agent(prompt(u, n), opts(u.p, u, n))
-  if (!r) { n++; r = await agent(prompt(u, n), opts(u.p, u, n, false)) }   // infra: 1 retry, no agentType
-  if (!r) return { id: u.id, outcome: 'unverified', reason: 'infra' }
-  if (r.status === 'blocked') return { id: u.id, outcome: 'brief', reason: r.blocked_reason }
-  let bad = newFails(r)
-  if (!bad.length) return { id: u.id, outcome: 'ok', r }
-  if (!u.fb) return { id: u.id, outcome: 'unverified', reason: 'gate', failing: bad }
-  n++
-  const fix = `MODE: repair. Fix only these new failures:\n${bad.join('\n')}\nPrevious summary: ${r.summary}`
-  const r2 = await agent(prompt(u, n, fix), opts(u.fb, u, n))                // the one re-route
-  bad = newFails(r2)
-  return r2 && !bad.length ? { id: u.id, outcome: 'ok-rerouted', r: r2 }
-    : { id: u.id, outcome: 'unverified', reason: 'gate-after-fb', failing: bad }
-}
-
-phase('Implement')
-let done = []
-if (A.worktree) done = await pipeline(A.units, u => runUnit(u))
-else for (const u of A.units) done.push(await runUnit(u))                   // serial, in place
-
-phase('Review')
-const files = [...new Set(done.filter(d => d && d.r).flatMap(d => d.r.files_changed))]
-const review = files.length ? await workflow('dynamic-fanout:fanout', { ...A.reviewArgs,
-  kind: 'review', units: [{ ...A.reviewArgs.unit, scope: { files } }] }) : null
-if (review && review.started === false) return { units: done, files, review }   // rails/dryRun/pause — surface it, do not read .digest
-return { units: done, files, review: review && review.digest }
 ```
 
-- `reviewArgs` is built by the master and must validate on its own: `v: 2`, `depth`,
-  `session`, `shared`, `ultra`, `verify` (blocker/high → V3), `caps`, `confirmed: true`
-  (the user already approved at the implement pause), and one review `unit` card (W·high,
-  `check: 'quote+V3'`, `fb: null`). In worktree mode its brief names each unit's worktree
-  path. If `review.started === false` (rails rejected it, or P exceeded `pauseUsd` before
-  `confirmed` took effect), the skeleton returns `review` itself rather than
-  `review.digest`, which would otherwise be `undefined` with no error raised.
-- The inline script has no commit meter: print U/P/R/C from the dry run and the theme
-  budget (×1.5) on the run card, and check actuals with `ledger-cost` after each pass.
+- Pricing reuses the foreman: the workflow calls `dynamic-fanout:fanout` with
+  `kind: 'implement'`, `dryRun: true` and one unit per theme (`ctx: 'keep'`,
+  `check: 'tests'`), so implement and fan-out estimates come from one price model and the
+  same `estUsd`/`turns` per theme.
+- Each theme runs on `dynamic-fanout:implementer` (60-turn cap), test-first: write or
+  extend a failing test, then make the change that turns it green, then commit.
+- A theme's result: `status: 'ok' | 'partial' | 'blocked'`, `suite: {passed, failed}`,
+  `files_changed`, `commit`, `summary`. `ok` needs `suite.failed === 0`; a `blocked`
+  result naming `brief`/`access`/`scope` goes back to the master, never to `fb` (the
+  repair cell would hit the same wall).
+- The review prompt carries the intended changes (theme id, outcome, first line of its
+  brief) and the commit range, not the implementers' reasoning, so the reviewer judges
+  the diff on its own terms. See `agents/reviewer.md` for what it checks and reports.
+
+## RESULT
+
+```js
+{ started: true, card, estimate: { units, review, total },
+  money: { committedUsd, ceilingUsd },
+  results: [{ id, attempts: [{ n, cell, kind, ok }], outcome, reason, result, warning }],
+  review: { ran: true, cell, range, text } | { ran: false, reason },
+  summary: { ok, repaired, failed, brief, refused }, warnings }
+```
+`outcome` ∈ `ok | ok-repaired | failed | brief | refused`. `started: false` shapes mirror
+the foreman's: `{ reason: 'rails'|'money'|'dryRun'|'pause'|'no-args', ... }`.
+
+## Fallback: hand-written inline script
+
+The dedicated workflow covers the common shape (serial themes, one repair pass, one
+review). For a shape it does not fit — for example themes that must run in parallel
+worktrees, or a review gate that is not a single reviewer agent — the master may still
+write an inline Workflow script from the recipe above, using the same card format and
+rails, and call `workflow('dynamic-fanout:fanout', { ...args, kind: 'review', ... })` for
+its diff review (one nesting level is allowed). Reach for this only when
+`dynamic-fanout:implement`'s args v1 genuinely cannot express the run.
