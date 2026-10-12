@@ -187,8 +187,9 @@ test('themes run serially in order, then one review on the reviewer agent', asyn
   const rp = calls.at(-1).prompt
   assert.match(rp, /git -C \/tmp\/work\/repo log --oneline c-t1\^\.\.HEAD/)
   assert.match(rp, /commits made in this run: c-t1, c-t2, c-t3/)
-  for (const id of ['t1', 't2', 't3']) assert.ok(rp.includes(`- ${id} (ok): Fix ${id}: the first line of the brief`), `intended change ${id} listed`)
-  assert.ok(!rp.includes('more detail'), 'only the first line of each brief')
+  // The whole brief (whitespace collapsed): a reviewer shown only line 1 of a multi-item
+  // brief flags items 2..n as scope creep.
+  for (const id of ['t1', 't2', 't3']) assert.ok(rp.includes(`- ${id} (ok): Fix ${id}: the first line of the brief more detail`), `intended change ${id} listed in full`)
   assert.ok(res.money.committedUsd <= res.money.ceilingUsd)
   assert.ok(Math.abs(res.money.committedUsd - res.estimate.total) < 1e-3, 'no repair: committed = estimate')
 })
