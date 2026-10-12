@@ -94,6 +94,22 @@ describe('check-evidence', () => {
     assert.equal(claims[0].verdict, 'UNVERIFIED');
   });
 
+  test('support quotes: an unresolved one drops CONFIRMED to PLAUSIBLE, never UNVERIFIED', () => {
+    const ev = { file: 'src/billing.py', line: 3, quote: 'GRACE_MINUTES = 30' };
+    const res = { results: { claims: [
+      { cid: 's1', verdict: 'CONFIRMED', reason: 'r', evidence: [ev], support: { file: 'src/billing.py', line: 3, quote: 'GRACE_MINUTES = 30' } },
+      { cid: 's2', verdict: 'CONFIRMED', reason: 'r', evidence: [ev], support: { file: 'src/billing.py', line: 3, quote: 'invented support' } },
+      { cid: 's3', verdict: 'CONFIRMED', reason: 'r', evidence: [ev], support_cmd: 'grep -rn nothing src/' },
+      { cid: 's4', verdict: 'PLAUSIBLE', reason: 'r', evidence: [ev], support: { file: 'src/billing.py', line: 3, quote: 'invented support' } },
+    ] } };
+    const { report, claims } = ce.audit(res, { root: ROOT });
+    assert.deepEqual(claims.map((c) => c.verdict), ['CONFIRMED', 'PLAUSIBLE', 'CONFIRMED', 'PLAUSIBLE']);
+    assert.deepEqual(report.downgrades.map((d) => [d.cid, d.from, d.to, d.reason]), [['s2', 'CONFIRMED', 'PLAUSIBLE', 'support']]);
+    assert.equal(claims[1].reason, 'check-evidence: support src/billing.py:3 quote not found');
+    assert.equal(claims[1].verdictBeforeAudit, 'CONFIRMED');
+    assert.deepEqual([report.supportQuotes, report.supportResolved], [2, 1], 'only CONFIRMED supports are audited; support_cmd is not');
+  });
+
   test('downgrade-only: no verdict is ever raised', () => {
     const rank = { CONFIRMED: 3, REFUTED: 3, PLAUSIBLE: 2, UNVERIFIABLE: 1, UNVERIFIED: 1 };
     const verdicts = ['CONFIRMED', 'PLAUSIBLE', 'REFUTED', 'UNVERIFIED', 'UNVERIFIABLE'];
@@ -102,8 +118,8 @@ describe('check-evidence', () => {
       { file: 'src/billing.py', line: 3, quote: 'nowhere' },
       { file: 'src/missing.py', line: 3, quote: 'x' },
     ];
-    for (const verdict of verdicts) for (const ev of quotes) for (const cq of [quotes[0], quotes[1], undefined]) {
-      const res = { results: { claims: [{ cid: 'k', verdict, evidence: [ev], counter_quote: cq }] } };
+    for (const verdict of verdicts) for (const ev of quotes) for (const cq of [quotes[0], quotes[1], undefined]) for (const sq of [quotes[0], quotes[1], undefined]) {
+      const res = { results: { claims: [{ cid: 'k', verdict, evidence: [ev], counter_quote: cq, support: sq }] } };
       const after = ce.audit(res, { root: ROOT }).claims[0].verdict;
       assert.ok(rank[after] <= rank[verdict], `${verdict} -> ${after} is an upgrade`);
       if (verdict === 'UNVERIFIED' || verdict === 'UNVERIFIABLE') assert.equal(after, verdict);

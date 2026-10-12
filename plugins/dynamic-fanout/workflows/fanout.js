@@ -29,7 +29,10 @@ const BRIEF_REASONS = ['no_access', 'ambiguous_brief', 'out_of_scope']
 const CAPABILITY_REASONS = ['too_hard', 'contradictory_evidence']
 // 0.1.2: medium drops to V1 (grounded quotes, no skeptic). Measured: a review produced ~4
 // mediums per unit, so V2 on mediums made topK — not risk — decide what got verified.
-const DEFAULT_RUNGS = { blocker: 'V3', high: 'V3', medium: 'V1', low: 'V0', info: 'V0' }
+// 0.1.4: medium back to V2. Lean skeptics read through Bash and cost a fraction of before,
+// so every medium gets one skeptic at the producer's model·medium; topK still bounds how
+// many mediums are checked (only high/blocker and parity claims are exempt from it).
+const DEFAULT_RUNGS = { blocker: 'V3', high: 'V3', medium: 'V2', low: 'V0', info: 'V0' }
 const DEFAULT_TOPK = { quick: 6, standard: 12, deep: 25 }
 const DEFAULT_ROUNDS = { quick: 0, standard: 1, deep: 2 }
 const MAX_INSPECT_QUOTES = 40
@@ -688,14 +691,28 @@ function rungFor(c, rungs) {
   return RUNGS[Math.min(4, Math.max(0, r))]
 }
 
+// A CONFIRMED verdict must carry the skeptic's own support: a verbatim quote it found
+// (support) or, for an absence claim, the empty search it ran (support_cmd). Without
+// either it is kept as PLAUSIBLE — a skeptic's say-so is not confirmation.
+function requireSupport(v) {
+  if (!v || v.verdict !== 'CONFIRMED') return v
+  const quoted = v.support && v.support.file && v.support.quote
+  const cmd = typeof v.support_cmd === 'string' && v.support_cmd.trim()
+  if (quoted || cmd) return v
+  return { ...v, verdict: 'PLAUSIBLE', reason: `confirmed without own support: ${v.reason || ''}`.trim() }
+}
+
 function mergeVerdicts(list) {
-  const vs = list.filter(Boolean)
+  const vs = list.filter(Boolean).map(requireSupport)
   if (!vs.length) return { verdict: 'UNVERIFIED', reason: 'no verdict returned' }
   if (vs.length === 1) return vs[0]
   const kinds = new Set(vs.map(v => v.verdict))
   if (kinds.size === 1) return { ...vs[0], reason: vs.map(v => v.reason).filter(Boolean).join(' / ').slice(0, 600) }
   if (kinds.has('REFUTED')) return { verdict: 'UNVERIFIED', reason: `split panel: ${vs.map(v => v.verdict).join(' vs ')} — master spot-read`, split: true }
-  if (kinds.has('CONFIRMED') && kinds.has('PLAUSIBLE') && kinds.size === 2) return { verdict: 'PLAUSIBLE', reason: 'panel: one lens could not fully confirm' }
+  if (kinds.has('CONFIRMED') && kinds.has('PLAUSIBLE') && kinds.size === 2) {
+    const unsupported = vs.some(v => (v.reason || '').startsWith('confirmed without own support'))
+    return { verdict: 'PLAUSIBLE', reason: `panel: one lens could not fully confirm${unsupported ? ' (confirmed without own support)' : ''}` }
+  }
   return { verdict: 'PLAUSIBLE', reason: `panel: ${vs.map(v => v.verdict).join(' vs ')}` }
 }
 
@@ -705,7 +722,7 @@ function normalizeVerdict(v) {
     return { ...v, verdict: 'PLAUSIBLE', reason: `refuted without a counter-quote — kept as plausible. ${v.reason || ''}`.trim() }
   }
   if (v.verdict === 'UNVERIFIABLE') return { ...v, verdict: 'UNVERIFIED' }
-  return v
+  return requireSupport(v)
 }
 
 function mergeResults(a, b) {
@@ -805,6 +822,8 @@ const VERDICT = {
           reason: { type: 'string', maxLength: 300 },
           severity: { type: 'string', enum: SEVERITIES },
           counter_quote: EVIDENCE,
+          support: EVIDENCE,
+          support_cmd: { type: 'string', maxLength: 200 },
         },
         required: ['cid', 'verdict', 'reason'],
       },
@@ -858,7 +877,7 @@ const INSPECT_RULES = [
 
 const SKEPTIC_RULES = [
   'You are an independent skeptic. For each claim decide:',
-  '- CONFIRMED: you verified it yourself in the files or data.',
+  '- CONFIRMED: you verified it yourself in the files or data, and you give your own support: support {file, line, quote} = a verbatim quote you found that shows the claimed behaviour (prefer a line other than the producer\'s evidence), or, for a claim that something is absent, support_cmd = the exact search you ran that came back empty. Without support, use PLAUSIBLE.',
   '- REFUTED: you found concrete counter-evidence; give counter_quote {file, line, quote}. No counter-evidence means not refuted.',
   '- PLAUSIBLE: it could be true but you could not fully confirm it.',
   '- UNVERIFIABLE: it cannot be checked with the access you have.',
@@ -1257,6 +1276,8 @@ async function runBatch(b) {
     const v = b.rung === 'V4' ? mergeVerdicts(got) : got[0]
     Object.assign(c, { verdict: v.verdict, verdictBy: `${b.id}·${cellKey(b.cell)}`, reason: v.reason || null })
     if (v.counter_quote) c.counter_quote = v.counter_quote
+    if (v.support) c.support = v.support
+    if (v.support_cmd) c.support_cmd = v.support_cmd
     if (v.severity && SEVERITIES.includes(v.severity)) c.verifiedSeverity = v.severity
   }
 }
@@ -1354,7 +1375,8 @@ const digest = {
   })),
   top: [...claims].sort(SEV_ORDER).slice(0, 15).map(c => {
     const e = (c.evidence || [])[0] || {}
-    return { cid: c.cid, unit: c.unit, severity: c.severity, title: c.title, verdict: c.verdict, file: e.file || null, line: e.line || null }
+    const support = c.support && c.support.file ? `${c.support.file}:${c.support.line}` : c.support_cmd || null
+    return { cid: c.cid, unit: c.unit, severity: c.severity, title: c.title, verdict: c.verdict, file: e.file || null, line: e.line || null, support }
   }),
   money: {
     U: round2(M.U), P: round2(M.P), R: round2(M.R), C: round2(M.C), parityBound: !!(A.caps && A.caps.parityBound),
@@ -1374,7 +1396,7 @@ return {
     claims: claims.map(c => ({
       cid: c.cid, unit: c.unit, severity: c.severity, verifiedSeverity: c.verifiedSeverity || null, title: c.title, claim: c.claim,
       evidence: c.evidence, rung: c.rung || null, verdict: c.verdict, verdictBy: c.verdictBy || null, reason: c.reason || null,
-      counter_quote: c.counter_quote || null, parity: !!c.parity, producer: c.producer || null, bump: c.bump || 0,
+      counter_quote: c.counter_quote || null, support: c.support || null, support_cmd: c.support_cmd || null, parity: !!c.parity, producer: c.producer || null, bump: c.bump || 0,
       blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, mergedFrom: c.mergedFrom || null,
     })),
   },

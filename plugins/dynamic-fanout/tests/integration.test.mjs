@@ -94,7 +94,9 @@ function reviewArgs() {
         why: 'V2: the list of constants is a set check', scope: { files: ['src/payments.py'] } }),
       u('r4', { scope: { files: ['src/invoice.py'] } }),
     ],
-    verify: { cells: { V3: { effort: 'high' } } },
+    // pins medium to V1 (the 0.1.2-0.1.3 default) so the fixture's counts below stay stable;
+    // the 0.1.4 V2 default is covered in fanout.test.mjs.
+    verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V1' } },
     sweep: { rounds: 1 },
     caps: { pauseUsd: 100 },
   };
@@ -109,7 +111,7 @@ function reviewResponder(prompt) {
     const cids = [...prompt.matchAll(/^(\S+) \| (?:info|low|medium|high|blocker) \|/gm)].map((m) => m[1]);
     return { verdicts: cids.map((cid) => (cid === 'r1.f2'
       ? { cid, verdict: 'REFUTED', reason: 'pct > 100 raises right below', counter_quote: COUNTER }
-      : { cid, verdict: 'CONFIRMED', reason: 'read it' })) };
+      : { cid, verdict: 'CONFIRMED', reason: 'read it', support_cmd: 'grep -n due_date src/invoice.py' })) };
   }
   if (tag === 's:1:1') {
     return okUnit({ files_read: ['src/invoice.py'], findings: [
@@ -158,7 +160,7 @@ describe('integration: review run -> check-evidence -> stats', async () => {
     assert.equal(run.res.card.S, 'opus');
     assert.equal(run.res.card.session, undefined);
     const v = Object.fromEntries(run.res.results.claims.map((c) => [c.cid, c.verdict]));
-    // medium defaults to V1 (0.1.2): r1.f2 and r3.f1 are both medium, so neither reaches a
+    // medium is pinned to V1 here: r1.f2 and r3.f1 are both medium, so neither reaches a
     // skeptic — only the two highs (r1.f1, r2.f1) do, and the mock verifier confirms both.
     assert.deepEqual(v, {
       'r1.f1': 'CONFIRMED', 'r1.f2': 'PLAUSIBLE', 'r2.f1': 'CONFIRMED',
@@ -171,7 +173,7 @@ describe('integration: review run -> check-evidence -> stats', async () => {
     assert.equal(r.claims, 7);
     assert.equal(r.quotes, 7);
     assert.equal(r.resolved, 5);
-    // no claim went to a skeptic as REFUTED (both mediums stayed at the V1 default), so
+    // no claim went to a skeptic as REFUTED (both mediums stay at the pinned V1), so
     // there is no counter_quote to audit.
     assert.equal(r.counterQuotes, 0);
     assert.equal(r.counterResolved, 0);
@@ -198,7 +200,7 @@ describe('integration: review run -> check-evidence -> stats', async () => {
     assert.deepEqual([c.confirmed, c.plausible, c.refuted, c.unverifiedClaims], [2, 3, 0, 2]);
     for (const t of a.result.digest.top) assert.equal(t.verdict, claims.find((x) => x.cid === t.cid).verdict);
     const r3 = claims.find((x) => x.cid === 'r3.f1');
-    // r3.f1 is medium, so it never reached a skeptic (V1 default): its pre-audit verdict is
+    // r3.f1 is medium, so it never reached a skeptic (pinned V1): its pre-audit verdict is
     // the V1 grounded-quote PLAUSIBLE, not a skeptic's CONFIRMED.
     assert.equal(r3.verdictBeforeAudit, 'PLAUSIBLE');
     assert.equal(r3.verdictBy, 'check-evidence');
@@ -379,7 +381,7 @@ describe('integration: refused units and a verify-only stage', async () => {
     const vargs = { ...reviewArgs(), stage: 'verify', claims: [
       { cid: 'r1.f1', unit: 'r1', severity: 'high', title: 't', claim: 'c', evidence: [ev('src/invoice.py', 19, 'return invoice.due_date <= today')], verdict: 'PENDING' },
     ] };
-    const vrun = await runFanout(vargs, (prompt) => ({ verdicts: [{ cid: 'r1.f1', verdict: 'CONFIRMED', reason: 'ok' }] }));
+    const vrun = await runFanout(vargs, (prompt) => ({ verdicts: [{ cid: 'r1.f1', verdict: 'CONFIRMED', reason: 'ok', support_cmd: 'grep -n due_date src/invoice.py' }] }));
     assert.equal(vrun.res.started, true);
     assert.deepEqual(vrun.res.ledger.units, []);
     const file = path.join(tmpDir(), 'verify.json');

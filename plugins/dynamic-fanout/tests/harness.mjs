@@ -18,6 +18,7 @@ const CORE_NAMES = [
   'centsStr', 'compareNumbers', 'evalInvariants', 'dedupClaims', 'rungFor', 'mergeVerdicts', 'normalizeVerdict',
   'mergeResults', 'mergeInspections', 'modeText', 'missingFiles', 'pathMatch', 'floorOf', 'turnsFor', 'typeKey', 'agentOpts', 'toScope',
   'verifySizing', 'expectedVerifiers', 'topKExempt', 'DEFAULT_RUNGS',
+  'EVIDENCE', 'VERDICT', 'SKEPTIC_RULES',
 ]
 
 export function loadCore() {
@@ -99,5 +100,8 @@ export function inspectAll(prompt, found = true) {
 
 export function verdictAll(prompt, verdict = 'CONFIRMED', extra = {}) {
   const cids = [...prompt.matchAll(/^(\S+) \| (?:info|low|medium|high|blocker) \|/gm)].map(m => m[1])
-  return { verdicts: cids.map(cid => ({ cid, verdict, reason: 'stub', ...extra })) }
+  // A well-behaved skeptic backs CONFIRMED with its own support (0.1.4); pass
+  // extra { support_cmd: undefined } to model one that does not.
+  const support = verdict === 'CONFIRMED' ? { support_cmd: "grep -n stub" } : {}
+  return { verdicts: cids.map(cid => ({ cid, verdict, reason: 'stub', ...support, ...extra })) }
 }
