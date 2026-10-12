@@ -33,7 +33,11 @@ const TOOL_CALLS = 35
 const er = e => EFFORTS.indexOf(e)
 const round4 = x => Math.round(x * 10000) / 10000
 const minEffort = (want, cap) => (er(cap) >= 0 && er(want) > er(cap) ? cap : want)
-const firstLine = s => String(s || '').split('\n').map(x => x.trim()).find(Boolean) || ''
+const REVIEW_BRIEF_CHARS = 1500
+const briefText = s => {
+  const t = String(s || '').replace(/\s+/g, ' ').trim()
+  return t.length > REVIEW_BRIEF_CHARS ? `${t.slice(0, REVIEW_BRIEF_CHARS)}…` : t
+}
 
 function validateArgs(a) {
   const errors = []
@@ -137,7 +141,10 @@ function themePrompt(a, t, n, prev) {
 
 function reviewPrompt(a, themes, commits) {
   const range = commits.length ? `${commits[0]}^..HEAD` : null
-  const changes = themes.map(r => `- ${r.id} (${r.outcome}): ${firstLine(r.brief)}`).join('\n')
+  // The whole brief (whitespace collapsed, capped), not just its first line: a reviewer
+  // that only sees item 1 of a multi-item brief flags items 2..n as scope creep and
+  // cannot judge them against what was asked.
+  const changes = themes.map(r => `- ${r.id} (${r.outcome}): ${briefText(r.brief)}`).join('\n')
   return {
     range,
     prompt: [
@@ -148,7 +155,7 @@ function reviewPrompt(a, themes, commits) {
         : `No commit ids were reported. Find this run's commits with \`git -C ${a.worktree} log --oneline\` (subjects start with "${a.commitPrefix}") and review them against the parent of the first one.`,
       `Test command (run from the worktree, at most once): ${a.testCmd}`,
       '',
-      'Intended changes (id, outcome of its implementer, first line of its brief):',
+      'Intended changes (id, outcome of its implementer, its brief):',
       changes,
       '',
       'Judge each intended change FIXED / PARTIAL / NOT FIXED / NOT CHECKED with file:line and its test coverage; list regressions and new risks (anything that makes a live system write, close, send or charge more, or silences an alert, comes first); end with SAFE TO MERGE or NEEDS CHANGES. Read-only: never edit or commit.',

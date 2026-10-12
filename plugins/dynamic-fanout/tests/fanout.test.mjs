@@ -554,6 +554,36 @@ test('evidence is canonicalized onto scope at claim intake: absolute vs relative
   assert.ok(dups[0].mergedFrom && dups[0].mergedFrom.length === 1)
 })
 
+test('sweep evidence is canonicalized onto the union of unit scopes, so a sweep re-find of a known claim is not a new claim', async () => {
+  const a = baseArgs({ sweep: { rounds: 1 } })
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 10, 'high', 'known')] }),
+    's:1:1': okUnit({ findings: [finding('/repo/project/src/a.py', 10, 'high', 'known again'), finding('/repo/project/src/b.py', 40, 'medium', 'new in b')] }),
+  })
+  const { res } = await runFanout(a, base)
+  const sweep = res.results.claims.filter(c => c.unit === 'sweep')
+  assert.equal(sweep.length, 1, 'the absolute re-cite of a.py:10 matches the known claim')
+  assert.deepEqual(sweep[0].evidence.map(e => e.file), ['src/b.py'], 'mapped onto the scope path of another unit')
+})
+
+test('verdict support and counter_quote paths are canonicalized onto scope', async () => {
+  const a = baseArgs()
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 10, 'high', 'h1'), finding('src/a.py', 50, 'high', 'h2')] }),
+  })
+  const skeptic = p => ({
+    verdicts: verdictAll(p, 'CONFIRMED').verdicts.map(v => (/ \| h1$/m.test(p.split(`${v.cid} |`)[1].split('\n')[0])
+      ? { cid: v.cid, verdict: 'CONFIRMED', reason: 'seen', support: { file: '/repo/project/src/a.py', line: 11, quote: 'y = 2' } }
+      : { cid: v.cid, verdict: 'REFUTED', reason: 'guarded', counter_quote: { file: '/repo/project/src/a.py', line: 48, quote: 'if ok:' } })),
+  })
+  const { res } = await runFanout(a, (p, o, n) => (tagOf(p).startsWith('v:') ? skeptic(p) : base(p, o, n)))
+  const by = t => res.results.claims.find(c => c.title === t)
+  assert.equal(by('h1').verdict, 'CONFIRMED')
+  assert.equal(by('h1').support.file, 'src/a.py')
+  assert.equal(by('h2').verdict, 'REFUTED')
+  assert.equal(by('h2').counter_quote.file, 'src/a.py')
+})
+
 test('dedup merges claims on the same file and line bucket, keeping the higher severity', () => {
   const claims = [
     { cid: 'a', title: 'x', severity: 'medium', evidence: [{ file: './src/a.py', line: 10, quote: 'q' }], producer: { model: 'sonnet' } },
