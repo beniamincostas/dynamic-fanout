@@ -15,7 +15,7 @@ version. Read it when you write a unit's `schema`, a brief that asks for specifi
 | `n` | no | 1 = numbers must tie out (needs `rederive` in `check`) |
 | `scope.files` | no | the files the unit must read; coverage is checked against `files_read` |
 | `in` | no | estimated tokens read; default `ultra.inAvg` |
-| `ctxTok` | no | CLAUDE.md tokens on this unit's path (when `ctx:'keep'`) |
+| `ctxTok` | no | when `ctx:'keep'`: tokens of this unit's CLAUDE.md chain (`scripts/claude-md-chain.mjs`); default `ultra.ctxTok` |
 | `ctx` | no | `'omit'` (default) or `'keep'` |
 | `p` | yes | `{model?, effort}`; model omitted = S; haiku takes no effort |
 | `fb` | yes | `{model?, effort}` strictly stronger than `p`, or `null` |
@@ -44,9 +44,11 @@ Every B2-vec unit also gets an inspector call, with or without `quote` in `check
 Each `units[]` row: `{id, role, vec, cell, fb, rd, ctx, check, why, parity, estUsd, turns, override}`.
 `turns` is the unit's planned tool calls on its agent type (capped at that type's
 `maxTurns`); the unit's prompt states the same number. `money` = `{U, P, R, C, ratio,
-parityP, parityBound}`. `calib` = `{scale, scaleByRole}`, the exact factors these
-estimates were priced with — pass it (or `stats.mjs`'s `CALIB` line) back on a later run
-so `stats.mjs update --ledger` compares that run's actual against what it actually used.
+parityP, parityBound}`. `calib` = `{pm, scale, scaleByRole}`: the price model and the
+exact factors these estimates were priced with, so `stats.mjs update --ledger` compares
+that run's actual against what it actually used (`scaleByRole[role] × scale`). Pass back
+`stats.mjs`'s `CALIB {"pm":…,"scaleByRole":…}` line verbatim as `args.calib`; learned
+factors without the current `pm` are ignored with a warning.
 
 ## UNIT_RESULT: every work and sweep agent returns this
 
@@ -71,9 +73,12 @@ a capability failure; <50 % selects `redo` mode.
 
 ## VERDICT: skeptic agent
 
-`{ verdicts: [{cid, verdict, reason ≤300, severity?, counter_quote?}] }` with
+`{ verdicts: [{cid, verdict, reason ≤300, severity?, counter_quote?, support?, support_cmd? ≤200}] }` with
 `verdict ∈ CONFIRMED | REFUTED | PLAUSIBLE | UNVERIFIABLE`. A REFUTED verdict without a
-`counter_quote {file, line, quote}` is kept as PLAUSIBLE; UNVERIFIABLE becomes UNVERIFIED.
+`counter_quote {file, line, quote}` is kept as PLAUSIBLE; a CONFIRMED verdict without the
+skeptic's own `support {file, line, quote}` (a verbatim quote it found) or, for an absence
+claim, `support_cmd` (the exact search that came back empty) is kept as PLAUSIBLE;
+UNVERIFIABLE becomes UNVERIFIED.
 
 ## CRITIC: deep runs only
 
@@ -82,7 +87,9 @@ a capability failure; <50 % selects `redo` mode.
 ## Claim (in `results.claims`)
 
 `{cid, unit, severity, verifiedSeverity, title, claim, evidence, rung, verdict, verdictBy,
-reason, counter_quote, parity, producer:{model, effort}, bump, blast, floor, mergedFrom}`.
+reason, counter_quote, support, support_cmd, parity, producer:{model, effort}, bump, blast, floor, mergedFrom}`.
+Evidence, `counter_quote` and `support` paths are canonicalized to the Scope spelling.
+`node scripts/report.mjs <output.json>` prints them sorted by severity.
 `floor` is the unit's own rung floor from a `V2`/`V3`/`V4` token in its `check` (-1 if
 none); when merging duplicate claims the kept floor is the highest of the merged set.
 `verdict ∈ CONFIRMED | PLAUSIBLE | REFUTED | UNVERIFIED | PENDING` (PENDING only after a

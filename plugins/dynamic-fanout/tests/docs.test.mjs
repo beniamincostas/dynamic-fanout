@@ -1,0 +1,56 @@
+// Docs-vs-code consistency: the skill and its references must describe the code as built.
+// Run: node --test plugins/dynamic-fanout/tests/docs.test.mjs
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const PLUGIN = path.join(HERE, '..');
+const REPO = path.join(PLUGIN, '..', '..');
+const read = (...p) => fs.readFileSync(path.join(...p), 'utf8');
+const SKILL = read(PLUGIN, 'skills', 'dynamic-fanout', 'SKILL.md');
+const REFS = path.join(PLUGIN, 'skills', 'dynamic-fanout', 'references');
+const FANOUT = read(PLUGIN, 'workflows', 'fanout.js');
+
+test('plugin.json version matches the newest CHANGELOG entry', () => {
+  const version = JSON.parse(read(PLUGIN, '.claude-plugin', 'plugin.json')).version;
+  const top = read(REPO, 'CHANGELOG.md').match(/^## dynamic-fanout (\d+\.\d+\.\d+)/m);
+  assert.ok(top, 'CHANGELOG has a version heading');
+  assert.equal(top[1], version);
+});
+
+test('SKILL.md states the medium rung fanout.js defaults to', () => {
+  const medium = FANOUT.match(/const DEFAULT_RUNGS = \{[^}]*medium: '(V\d)'/)[1];
+  assert.match(SKILL, new RegExp('`medium` defaults to \\*\\*' + medium + '\\*\\*'));
+  assert.match(SKILL, new RegExp('medium→' + medium));
+  assert.doesNotMatch(read(REFS, 'routing.md'), /medium[^\n]{0,40}defaults? to \*\*V1\*\*/);
+});
+
+test('SKILL.md wires the 0.1.4 scripts into scouting and close', () => {
+  assert.match(SKILL, /claude-md-chain\.mjs/);
+  assert.match(SKILL, /scripts\/report\.mjs <output-file>\.audited\.json/);
+  assert.match(SKILL, /"pm"/);
+});
+
+test('economics.md carries the calibration card for the current price model', () => {
+  const pm = FANOUT.match(/const PRICE_MODEL = (\d+)/)[1];
+  const econ = read(REFS, 'economics.md');
+  assert.match(econ, new RegExp('[Pp]rice model ' + pm));
+  for (const k of ['baseCtxLean', 'readFactor', 'sweepInFrac', 'verifierInFrac']) {
+    const v = FANOUT.match(new RegExp('\\n  ' + k + ': ([\\d.]+)'))[1];
+    assert.match(econ, new RegExp('`' + k + '` \\| ' + v.replace('.', '\\.') + ' '), `${k} ${v} in economics.md`);
+  }
+});
+
+test('workflow.md and schemas.md document VERDICT support and the new scripts', () => {
+  for (const f of ['workflow.md', 'schemas.md']) {
+    const t = read(REFS, f);
+    assert.match(t, /support_cmd/, `${f} support_cmd`);
+    assert.match(t, /calib[^\n]*pm/, `${f} calib.pm`);
+  }
+  const wf = read(REFS, 'workflow.md');
+  assert.match(wf, /report\.mjs/);
+  assert.match(wf, /claude-md-chain\.mjs/);
+});

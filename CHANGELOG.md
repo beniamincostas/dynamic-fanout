@@ -1,5 +1,64 @@
 # Changelog
 
+## dynamic-fanout 0.1.4 — 2026-10-12
+
+A 23-agent research run showed where the crew's money really went. `omitClaudeMd: true`
+drops only the CLAUDE.md files loaded at agent start; whenever an agent uses the **Read**
+tool, Claude Code attaches every CLAUDE.md between the session cwd and that file as
+nested memory. A ~350 KB nested CLAUDE.md pushed 15 of 23 lean agents from ~8k to ~150k
+tokens of context — about 2/3 of the crew's cost. A probe confirmed that Read attaches
+it and Bash (`nl -ba FILE | sed -n 'A,Bp'`, `grep -n`) does not. The price model had
+been fitted to that leak: `readFactor` 4 ("context grows 4–5× the planned reading") was
+mostly the attached CLAUDE.md; without it workers read 5–24k tokens in 4–16 API turns.
+The same run exposed a calibration double count (a legacy global `calib.scale` of 1.28
+passed on top of per-role factors that already contained it), a gap sweep priced like a
+full work unit ($3.73 estimate vs $0.35 actual), ~10 master shell calls to dig claims out
+of the result JSON, and evidence cited both absolute and repo-relative for one file.
+
+### Changed
+- **The lean crew reads through Bash, not Read.** `worker`, `worker-low/medium/high`,
+  `skeptic`, `skeptic-high`, `inspector` and `reviewer` carry `Grep, Glob, Bash`;
+  `worker-mcp` disallows Read; `worker-ctx*` and `implementer*` keep Read. Agent bodies,
+  unit, inspector and skeptic prompts carry a short read recipe (`grep -n`,
+  `nl -ba | sed -n` ranges) and a defined outcome when Bash is refused (`blocked`,
+  `no_access`). **Requirement:** read-only Bash in subagents (auto mode, or allow rules
+  for `nl`, `sed -n`, `grep`).
+- **Price model 3** (`PRICE_MODEL` in `fanout.js`), refitted without the leak:
+  `baseCtxLean` 8000 → 11000, `readFactor` 4 → 1 (`ultraReadFactor` stays 4: ultracode's
+  agents use Read), `verifierInFrac` 0.5 → 0.25, new `sweepInFrac` 0.25, and
+  `scaleByRole` `{work 0.6, verify 0.35, inspect 0.5, sweep 0.8}`. The measured fit was
+  work 0.41 / verify 0.19 / inspect 0.25 / sweep 0.72; the priors sit above it on purpose,
+  because under-estimating drains the work pool and starves verification.
+- **The gap sweep is its own role** (`sweep`), priced at `inAvg × sweepInFrac`.
+- **Calibration is keyed by price model.** `card.calib` carries `pm`; `calibrate()`
+  honours `scale`/`scaleByRole` only from the current price model and warns otherwise.
+  `stats.mjs` uses `scaleByRole[role] × scale` as the factor a run was priced with (no
+  double count), archives a calib from another price model, blends a role's first
+  observation from that factor, and `--summary` prints `CALIB {"pm":3,...}` only for the
+  current price model — the master passes it verbatim as `args.calib`.
+- **`medium` defaults to V2 again** (V1 since 0.1.2): lean skeptics are cheap, so every
+  medium within `topK` gets one.
+- **CONFIRMED needs the skeptic's own support.** VERDICT gains `support {file, line,
+  quote}` and `support_cmd` (the empty search, for an absence claim); a CONFIRMED with
+  neither is kept as PLAUSIBLE, and `check-evidence.mjs` drops a CONFIRMED whose support
+  quote does not resolve. Support is carried on claims, in results and in `digest.top`.
+- **Evidence paths are canonicalized** to their Scope spelling at claim intake (unit
+  findings, sweep claims, `counter_quote`, `support`), so one file cited absolute and
+  repo-relative dedups to one claim.
+- `implement.js` passes a theme's `ctxTok` through to its pricing card.
+
+### Added
+- `scripts/report.mjs`: one-call view of a run's output (header, per-unit rows, claims by
+  severity with support; `--unit`, `--min-severity`, `--verdict`, `--payload`, `--json`).
+  The close command now ends with it.
+- `scripts/claude-md-chain.mjs`: lists the CLAUDE.md chain a Read-capable agent gets
+  attached for given paths, with bytes and tokens — the per-unit `ctxTok` of a
+  `ctx:'keep'` card.
+- SKILL.md: scouting measures each unit's chain; a "large master context" note (plan in at
+  most 3 turns, read results only through `report.mjs`).
+- Tests: `agents.test.mjs` (tool rules, rung-copy identity), `claude-md-chain.test.mjs`,
+  `report.test.mjs`, `docs.test.mjs` (docs state the defaults the code uses).
+
 ## dynamic-fanout 0.1.3 — 2026-10-11
 
 Implement mode had been a playbook recipe the master hand-wrote into an inline Workflow

@@ -3,8 +3,9 @@
 The master supplies counts and sizes; the foreman (`workflows/fanout.js`) does the
 arithmetic. Read this file when you fill `ultra`, size units, or a plan comes back
 with a `money:` rail. `fanout.js` `DEFAULT_CALIB` is the reference copy of every
-constant below; `args.calib` overrides any of them, and `calib.scale` is the one the
-plugin tunes itself (see Self-calibration).
+constant below; `args.calib` overrides any of them, and `calib.scaleByRole` is the one the
+plugin tunes itself, keyed by price model (see Self-calibration). The current price model
+is **3** (`PRICE_MODEL` in `fanout.js`, since 0.1.4).
 
 ## Price table
 
@@ -48,18 +49,19 @@ estUsd = [ (prefix + g·in)        × inPrice × cacheWrite   // everything writ
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `baseCtxLean` | 8000 | fixed prefix of the allowlisted types: `worker`, `skeptic`, `inspector` |
+| `baseCtxLean` | 11000 | fixed prefix of the allowlisted types: `worker`, `skeptic`, `inspector` (7–12.5k at start, ~3–4k of tool/instruction attachments arrive on turn 2) |
 | `baseCtx` | 15000 | fixed prefix of full-tool types: `worker-mcp`, `worker-ctx`, `implementer` (+ `ctxTok` when CLAUDE.md is kept) |
 | `turnsBase`, `tokPerTurn` | 10, 2500 | turns ≈ 10 + in/2.5k at high effort |
 | `effortTurns` | low 0.6 · medium 0.8 · high 1 · xhigh 1.3 · max 1.6 (haiku 0.6) | effort multiplies turns |
 | `outPerTurn` | low 600 · medium 1000 · high 1500 · xhigh 1800 · max 2200; haiku 500 | output tokens per turn |
-| `readFactor` (g) | 4 | crew context grows to prefix + 4·in — raised from 3 in 0.1.2: even turn-capped agents with a targeted-reading prompt measured ~4–5× the planned reading |
+| `readFactor` | 1 | g: crew context grows to prefix + g·in. Was 4 (0.1.2–0.1.3); that 4–5× growth was mostly the nested CLAUDE.md that Read attached, gone for lean agents in price model 3 |
 | `caps` | worker 30 · workerMcp 35 · workerCtx 30 · implementer 60 · skeptic 12 · inspector 6 | = each agent file's `maxTurns`; the price uses the same cap |
 | `inspectorIn` | 12000 | tokens an inspector call reads |
-| `verifierInFrac` | 0.5 | a verifier (and the critic) is priced at this share of `ultra.inAvg` |
+| `verifierInFrac` | 0.25 | a verifier (and the critic) is priced at this share of `ultra.inAvg`; skeptics reading through Bash measured 4–10k tokens |
+| `sweepInFrac` | 0.25 | a gap-sweep round is priced at this share of `ultra.inAvg` (it re-reads a slice of scope, not a unit's whole reading) |
 | `ultraReadFactor`, `ultraTurnCap` | 4, 80 | how U's agents are priced (below) |
-| `scaleByRole` | `{work: 1.3, verify: 0.3, inspect: 0.7}` | per-role self-calibration multiplier (see "Per-role calibration" below) |
-| `scale` | 1 | global self-calibration multiplier, applied on top of `scaleByRole`; neutral since 0.1.2 superseded the single-scale path |
+| `scaleByRole` | `{work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8}` | per-role prior, above the measured fit on purpose (see "What 0.1.3 got wrong") |
+| `scale` | 1 | global multiplier on top of `scaleByRole`; honoured only from the current price model, neutral otherwise |
 
 - `in` = tokens the agent is planned to read; `ctxTok` = CLAUDE.md tokens on its path
   (0 for `ctx:'omit'`).
@@ -67,44 +69,80 @@ estUsd = [ (prefix + g·in)        × inPrice × cacheWrite   // everything writ
   `ctx:'keep'` → worker-ctx; vector T2 → worker-mcp; else worker. Its **role** —
   `work` (implementer/worker/workerMcp/workerCtx), `verify` (skeptic) or `inspect`
   (inspector) — is fixed per type (`ROLE_OF`) and selects which `scaleByRole` entry
-  applies; `estUsd`'s `o.role` carries it through.
+  applies; `estUsd`'s `o.role` carries it through. The gap sweep runs on a worker but is
+  priced and calibrated as its own role, `sweep` (`agentOpts('worker', K, 'sweep')`).
+- `ctxTok` for a `ctx:'keep'` unit is its own measured chain (`scripts/claude-md-chain.mjs
+  <session-cwd> <paths>`); without a per-unit `ctxTok` it falls back to `ultra.ctxTok`.
 - **U is priced the way ultracode actually behaves:** S·E_ref, full prefix + `ctxTok`,
-  `readFactor` 4, turn cap 80 (no real cap), role `work`. The crew ceiling 0.5·U
+  `ultraReadFactor` 4 (ultracode's agents use Read, so they do get the nested CLAUDE.md),
+  turn cap 80 (no real cap), role `work`. The crew ceiling 0.5·U
   therefore compares bounded crew agents with unbounded ultracode agents, like with like.
 
 Why this shape: an agent's cost is its context re-read on every turn, so **turns ×
 context dominate; agent count and CLAUDE.md come next; the model comes last**. Capping
 turns and keeping the prefix lean are the two biggest levers the plan controls.
 
-## Calibration card (computed from the formula, `in` = 40k)
+## Calibration card (price model 3, computed from the formula, `in` = 40k)
 
 | Cell | turns | Lean `worker` | `worker-ctx`, +30k CLAUDE.md | Ultracode-style (xhigh, +30k, unbounded) |
 |---|---|---|---|---|
-| haiku | 16 | $0.31 | — | — |
-| sonnet·low | 16 | $0.63 | — | $1.97 |
-| sonnet·medium | 21 | $0.82 | $1.06 | $1.97 |
-| sonnet·high | 26 | $1.06 | $1.35 | $1.97 |
-| opus·medium | 21 | $1.63 | $2.13 | $3.95 |
-| opus·high | 26 | $2.13 | $2.70 | $3.95 |
-| opus·xhigh | 30 (cap) | $2.54 | $3.17 | $3.95 (34 turns) |
-| fable·medium | 21 | $4.08 | $5.32 | $9.87 |
-| fable·high | 26 | $5.32 | $6.74 | $9.87 |
+| haiku | 16 | $0.09 | $0.15 | — |
+| sonnet·low | 16 | $0.19 | $0.31 | $1.18 |
+| sonnet·medium | 21 | $0.28 | $0.42 | $1.18 |
+| sonnet·high | 26 | $0.41 | $0.56 | $1.18 |
+| opus·medium | 21 | $0.56 | $0.83 | $2.37 |
+| opus·high | 26 | $0.81 | $1.13 | $2.37 |
+| opus·xhigh | 30 (cap) | $1.02 | $1.37 | $2.37 (34 turns) |
+| fable·medium | 21 | $1.40 | $2.09 | $5.92 |
+| fable·high | 26 | $2.04 | $2.82 | $5.92 |
 
-Inspector (sonnet·low, 12k, 6 turns) ≈ $0.18. V3 skeptic (opus·high, 20k, 12 turns) ≈ $0.88;
-the ultracode-style verifier at the same reading ≈ $2.24.
+All columns carry `scaleByRole.work` 0.6, U's included, so P/U keeps its meaning.
+Inspector (sonnet·low, 12k, 6 turns) ≈ $0.06. V3 skeptic (opus·high, 10k = 0.25 × 40k,
+12 turns) ≈ $0.19; the ultracode-style verifier at the same reading ≈ $1.34. A sweep round
+(opus·medium, 10k) ≈ $0.32.
 
 Reproduce any cell: from the plugin root,
 `node -e "const {loadCore}=await import('./tests/harness.mjs'); const c=loadCore(); const K=c.calibrate(); console.log(c.estUsd({model:'opus',effort:'high'}, 40000, 0, K, c.agentOpts('worker', K)))"`
-(for the ultracode column: `ctxTok` 30000, `effort:'xhigh'`, options `{lean:false, cap:80, readFactor:4}`).
+(for the ultracode column: `ctxTok` 30000, `effort:'xhigh'`, options `{lean:false, cap:80, readFactor:4, role:'work'}`).
 
 How to read the card:
-- On an Opus session, a lean opus·medium unit costs about 0.4× ultracode's agent ($1.63 vs
-  $3.95); sonnet·medium about 0.2×.
-- Keeping 30k of CLAUDE.md (on the 15k full-tool prefix) adds $0.5–0.65 per opus agent,
-  about as much as the effort step from medium to high. That is why `ctx:'keep'` is reserved for G2 units, and parity uses a
-  capsule with pointers.
+- On an Opus session, a lean opus·medium unit costs about 0.25× ultracode's agent ($0.56 vs
+  $2.37); sonnet·medium about 0.12×.
+- Keeping 30k of CLAUDE.md (on the 15k full-tool prefix) adds $0.3–0.35 per opus agent,
+  about as much as the effort step from medium to high. That is why `ctx:'keep'` is
+  reserved for G2 units, and parity uses a capsule with pointers. A real nested chain can
+  be far bigger than 30k: measure it, never guess.
 - At the cap, effort stops adding turns (opus·xhigh is capped at 30): a unit that plans
   its turns at the cap is too big; split it.
+
+## What 0.1.3 got wrong (price model 3; measured on a 23-agent research run)
+
+`omitClaudeMd` drops only the CLAUDE.md files loaded at agent start. Whenever an agent
+uses the **Read** tool, Claude Code attaches every CLAUDE.md between the session cwd and
+the file as nested memory. On the measured run a ~350 KB nested CLAUDE.md pushed 15 of 23
+lean agents from ~8k to ~150k tokens of context — about 2/3 of the crew's cost. A probe
+confirmed that Read attaches it and Bash (`nl -ba FILE | sed -n 'A,Bp'`, `grep -n`) does
+not, so 0.1.4 takes Read away from the lean crew. Price model 3 refits the defaults to
+leak-free agents:
+- **`readFactor` 4 → 1.** The "context grows 4–5× the planned reading" that justified 4
+  was mostly the attached CLAUDE.md. Leak-free workers read 5–24k tokens in 4–16 API
+  turns. Ultracode's agents still use Read, so `ultraReadFactor` stays 4.
+- **`baseCtxLean` 8000 → 11000**: lean agents start at 7–12.5k and gain ~3–4k of
+  attachments on turn 2.
+- **`verifierInFrac` 0.5 → 0.25**: skeptics reading through Bash read 4–10k tokens.
+- **The sweep is its own role.** It was priced like a full work unit ($3.73 estimate vs
+  $0.35 actual); it now reads `inAvg × sweepInFrac` (0.25) and calibrates as `sweep`.
+- **Calibration is keyed by price model.** The master passed a legacy global
+  `calib.scale` (1.28, learned under the old model) on top of per-role factors that
+  already contained it, and `stats.mjs` then learned per-role factors while ignoring that
+  scale. Now `card.calib` records `pm`; `calibrate()` honours `scale`/`scaleByRole` only
+  when `args.calib.pm` is the current price model (otherwise it warns and uses the
+  defaults); `stats.mjs` computes `used = scaleByRole[role] × scale` and archives a calib
+  from another price model instead of blending into it.
+- **The priors sit above the fit.** At these settings the measured run fitted work 0.41,
+  verify 0.19, inspect 0.25, sweep 0.72; the defaults are 0.6 / 0.35 / 0.5 / 0.8, because
+  under-estimating exhausts the work pool and starves verification, while an
+  over-estimate only leaves reserve unspent. Self-calibration walks them down with data.
 
 ## Re-pricing the real review
 
@@ -147,7 +185,7 @@ expensive**, starving verification further to correct an overrun it had no part 
 | | How it is formed | Who |
 |---|---|---|
 | **U** | `ultra.agents` × estUsd(S·E_ref, `inAvg`, `ctxTok`) + `ultra.verifiers` × estUsd(S·E_ref, `verifierInFrac`·`inAvg`, `ctxTok`), all on the unbounded ultracode options (full prefix, g 4, cap 80) | master counts, foreman prices |
-| **P** | Σ units (estUsd(p, in, ctx) on the unit's agent type + one inspector if `check` has `quote` or the unit is B2 + planned re-derivation `rd`) + `expected` × V3 skeptic at `inAvg`·`verifierInFrac` + `rounds` × sweep worker at `inAvg` + (depth `deep`: 1 completeness critic on W·high at `inAvg`·`verifierInFrac`, which also counts toward `plannedAgents`/`maxAgents`) | foreman |
+| **P** | Σ units (estUsd(p, in, ctx) on the unit's agent type + one inspector if `check` has `quote` or the unit is B2 + planned re-derivation `rd`) + `expected` × V3 skeptic at `inAvg`·`verifierInFrac` + `rounds` × sweep worker at `inAvg`·`sweepInFrac` (role `sweep`) + (depth `deep`: 1 completeness critic on W·high at `inAvg`·`verifierInFrac`, which also counts toward `plannedAgents`/`maxAgents`) | foreman |
 | **R** | Σ over units with `fb`: `rerouteRate` × estUsd(fb, in, ctx); floor = the largest single repair; cap = `reserveCapPct`·P; **the floor wins** over the cap; the largest B2 repair is earmarked | foreman |
 | **C** | crew ceiling = 0.5·U; with `parityBound` up to 0.8·U; `--ceiling` sets `caps.ceilingUsd` | rail |
 
@@ -161,7 +199,7 @@ findings a run actually expects, not a flat fraction of unit count:
 
 ```
 highs   = ceil(nUnits × highsPerUnit / batch)              // every expected high is checked
-medRung = verify.rungs.medium ?? DEFAULT_RUNGS.medium        // 'V1' by default (0.1.2)
+medRung = verify.rungs.medium ?? DEFAULT_RUNGS.medium        // 'V2' by default (0.1.4; V1 in 0.1.2–0.1.3)
 mediums = medRung ∈ {V2,V3,V4} ? ceil(min(nUnits × mediumsPerUnit, topK) / batch) : 0
 expected = highs + mediums
 ```
@@ -169,9 +207,9 @@ expected = highs + mediums
 `highsPerUnit: 0.9` and `mediumsPerUnit: 4` are measured on the validation review (7 high
 + 34 medium from 8 units). Highs are exempt from `topK` outright (`topKExempt` also now
 exempts any V3+-rung claim with severity ≥ high, not only parity), so `highs` reserves
-real capacity for all of them; `mediums` is 0 at the `V1` default — a medium only draws a
-skeptic once the master (or a unit's own `check`) raises its rung to `V2` or above, and
-even then the reserve is capped at `topK` mediums. This is what keeps `topK` a size
+real capacity for all of them. Since 0.1.4 mediums default to `V2` (lean skeptics are
+cheap), so `mediums` reserves one skeptic per batch of up to `topK` mediums; a master who
+sets `rungs.medium: 'V1'` gets `mediums` = 0. This is what keeps `topK` a size
 limit again instead of the thing deciding which findings get checked at all.
 
 ### The verification reserve
@@ -191,7 +229,8 @@ Count what ultracode would actually spawn, not what you plan to:
   ultracode would hand to its own agent. Do not apply your own packing here.
 - **`ultra.verifiers`**: about one per 3 expected findings.
 - **`ultra.ctxTok`**: CLAUDE.md tokens on the path (root + every nested CLAUDE.md the
-  agents would read under). Measure with `wc -c <files> | tail -1` and divide by 4.
+  agents would read under). Measure the start-up ones with `wc -c <files> | tail -1` ÷ 4
+  and the nested chain with `scripts/claude-md-chain.mjs <session-cwd> <paths>`.
 - **`ultra.inAvg`**: average tokens an ultracode agent would read (`wc -c` of its files ÷ 4).
 - **`ultra.basis`**: one line, for example `8 = 5 file clusters + 3 dimensions; 4 verifiers ≈ 12 findings/3`.
 
@@ -240,46 +279,41 @@ Do the task yourself, with no fan-out, when **any** of these hold:
 The routing-stats *Envelope* rule (last run of this kind above 0.6·U actual) multiplies
 these thresholds by 1.5 for that kind, and the card notes it.
 
-## Self-calibration: per-role (`calib.scaleByRole`, supersedes `calib.scale`)
+## Self-calibration: per-role, keyed by price model (`calib.pm` + `calib.scaleByRole`)
 
-0.1.1 learned one `calib.scale` for every agent. 0.1.2 learns one **per role** —
-`work` (worker/worker-mcp/worker-ctx/implementer), `verify` (skeptic), `inspect`
-(inspector) — because the validation run's miss ran in opposite directions by role (see
-"What 0.1.1 got wrong" above): a single blended `scale` would have overcorrected
-verification to compensate for a work overrun it had no part in.
+0.1.1 learned one `calib.scale` for every agent. 0.1.2 learned one **per role** because
+the validation run's miss ran in opposite directions by role (see "What 0.1.1 got
+wrong"). 0.1.4 adds a fourth role and keys everything by price model. The roles: `work`
+(worker/worker-mcp/worker-ctx/implementer, plus the deep completeness critic), `sweep`
+(gap-sweep rounds), `verify` (skeptic batches), `inspect` (inspector calls).
 
 1. At close, `ledger-cost.mjs <transcript-dir> --json` writes the actual dollars **by
-   kind** (`byKind`, a real ledger-cost.mjs output, not the old bare `{totals:{usd}}`
-   shape). `stats.mjs update … --ledger <that file>` then runs the comparison per role:
-   - **estimate** (`estimatedUsdByRole`), straight from this run's own ledger: `work` =
-     every unit attempt + every sweep round; `verify` = every verifier batch; `inspect` =
-     every inspector call;
-   - **actual** (`actualUsdByRole`): `work` sums `byKind.work` + `byKind.sweep` +
-     `byKind.critic` (whichever are present); `verify` = `byKind.verifier`; `inspect` =
-     `byKind.inspector`. A role whose kind(s) never appear is skipped (`null`), not
-     treated as a true zero.
-   - `ratio = actual / estimate`, clamped to **[0.1, 10]** (wider than the old [0.3, 5]:
-     a role ratio can legitimately be far from 1, as skeptics' 0.40/0.19 showed);
-   - `used` = the `scaleByRole[role]` this run was **actually priced with**
-     (`result.card.calib.scaleByRole[role]`, the factors `buildCard` now records on every
-     card; 1 if the card carried none) — so `target = used × ratio` is what the factor
-     *should* have been, not the raw ratio on top of whatever the default happens to be;
-   - `stats.calib.scaleByRole[role]` folds in `target` as an EWMA (α 0.5; outright on
-     that role's first observation).
-   - **Migration:** the first per-role write parks the old `calib.scale` at
-     `calib.legacyScale` (once) and resets `calib.scale` to 1, its neutral value. A
-     `--ledger` file with no `byKind` (an old-style ledger-cost output) still drives the
-     old single-`scale` path, untouched.
-2. `stats.mjs --summary <kind>` prints `CALIB {"scaleByRole":{"work":1.3,...}}` whenever
-   any role has a learned value (plus a `"scale"` key only when the global scale differs
-   from 1); the master passes that object as `args.calib` on the next run. With no
-   per-role data yet it falls back to the old `CALIB {"scale":X.XX}` line.
+   kind** (`byKind`). `stats.mjs update … --ledger <that file>` compares per role:
+   - **estimate**, straight from this run's own ledger; **actual** from `byKind`
+     (`work` = work + critic, `sweep` = sweep, `verify` = verifier, `inspect` =
+     inspector). A role whose kinds never appear is skipped, not treated as zero.
+   - `ratio = actual / estimate`, clamped to **[0.1, 10]**;
+   - `used` = the factor this run was **actually priced with**:
+     `card.calib.scaleByRole[role] × card.calib.scale` (1 when absent), so the global
+     scale is never counted twice; `target = used × ratio`;
+   - `stats.calib.scaleByRole[role]` folds in `target` as an EWMA (α 0.5). A role's first
+     observation under a price model blends from `used` (0.5·target + 0.5·used) instead of
+     replacing it outright.
+   - **Price model:** when the run's `card.calib.pm` differs from `stats.calib.pm` (or the
+     stored calib has none — the old global-scale era), the old calib moves to
+     `stats.calibArchive[<old pm or 'legacy'>]` and calibration starts fresh. A run whose
+     card carries no `pm`, or a `--ledger` file without `byKind`, feeds no calibration.
+2. `stats.mjs --summary <kind>` prints `CALIB {"pm":3,"scaleByRole":{...}}` only when
+   `stats.calib.pm` is the current price model — never a legacy global scale. The master
+   passes that object **verbatim** as `args.calib`; the foreman honours `scale` and
+   `scaleByRole` only when `pm` matches its `PRICE_MODEL`, and otherwise adds a warning and
+   keeps the defaults.
 
-`scaleByRole` and `scale` both move every role's estimates proportionally, so neither
-changes whether a plan fits the ceiling — they correct the absolute dollars: the card,
-the `pauseUsd` stop, the ledger's committed-vs-actual line and a user `--ceiling`. If
-actuals drift far from estimates because agents read more than planned, fix the briefs
-and packing first (and check `readFactor`); the per-role scale absorbs what remains.
+`scaleByRole` and `scale` move each role's estimates proportionally, so they correct the
+absolute dollars: the card, the `pauseUsd` stop, the ledger's committed-vs-actual line and
+a user `--ceiling`. If actuals drift far from estimates because agents read more than
+planned, fix the briefs and packing first (and check that the lean crew really reads
+through Bash); the per-role scale absorbs what remains.
 
 ## Stage-0 calibration
 
@@ -295,21 +329,24 @@ record each number with its date and the Claude Code version, and pass it as `ar
 | e. Cache reads: same-cell vs mixed-cell stage | 3 agents on one cell vs 3 on mixed cells | `cacheRead` share; whether ">2 cells per stage" becomes a rail |
 | f. Master share at `max` vs `xhigh` | the same plan turn at each effort | the SKILL.md effort |
 
-The 0.1.1 defaults come from 119 agents of one real run (see "What 0.1.0 got wrong"); the
-0.1.2 defaults (`readFactor`, `scaleByRole`, `highsPerUnit`, `mediumsPerUnit`) come from
-the validation run above. Every key is optional; missing keys keep the default:
+The 0.1.1 defaults come from 119 agents of one real run (see "What 0.1.0 got wrong");
+`highsPerUnit`, `mediumsPerUnit` from the 0.1.2 validation run; price model 3's
+`baseCtxLean`, `readFactor`, `verifierInFrac`, `sweepInFrac` and `scaleByRole` from the
+23-agent research run (see "What 0.1.3 got wrong"). Learned factors (`scale`,
+`scaleByRole`) need `pm: 3` beside them. Every key is optional; missing keys keep the default:
 
 ```js
 calib: {
+  pm: 3,
   prices: { haiku: {in:1, out:5}, sonnet: {in:2, out:10}, opus: {in:4, out:20}, fable: {in:10, out:50} },
   cacheWrite: 1.25, cacheRead: 0.1,
-  baseCtxLean: 8000, baseCtx: 15000, turnsBase: 10, tokPerTurn: 2500,
+  baseCtxLean: 11000, baseCtx: 15000, turnsBase: 10, tokPerTurn: 2500,
   effortTurns: { low: 0.6, medium: 0.8, high: 1, xhigh: 1.3, max: 1.6 },
   outPerTurn: { low: 600, medium: 1000, high: 1500, xhigh: 1800, max: 2200 }, haikuOutPerTurn: 500,
-  readFactor: 4, ultraReadFactor: 4, ultraTurnCap: 80,
+  readFactor: 1, ultraReadFactor: 4, ultraTurnCap: 80,
   caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
-  inspectorIn: 12000, verifierInFrac: 0.5,
-  scaleByRole: { work: 1.3, verify: 0.3, inspect: 0.7 }, scale: 1,
+  inspectorIn: 12000, verifierInFrac: 0.25, sweepInFrac: 0.25,
+  scaleByRole: { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 }, scale: 1,
   highsPerUnit: 0.9, mediumsPerUnit: 4
 }
 ```
@@ -319,8 +356,8 @@ calib: {
 
 ## Worked envelopes (Opus session, E_ref = xhigh, 0.1.1 defaults)
 
-Not re-priced for 0.1.2's `readFactor` 4 / `scaleByRole`; see "What 0.1.1 got wrong"
-above for the measured validation numbers.
+Not re-priced for 0.1.2's `readFactor` 4 / `scaleByRole` or for price model 3; see the
+calibration card above for current per-agent prices.
 
 ### 1. Review: 5 units on a payments package
 

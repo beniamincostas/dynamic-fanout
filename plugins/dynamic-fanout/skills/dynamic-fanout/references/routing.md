@@ -110,6 +110,15 @@ Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs 
 7. **Verifiers** (declare `verify.rungs` per severity and `verify.cells`):
    - the verifier's model ≥ every producer model it checks (rail);
    - V2 = the producer's model·medium (implicit); V3/V4 = W·high; parity claims run on S·high;
+   - default rungs: blocker/high → V3, **medium → V2** (since 0.1.4: one lean skeptic per
+     medium, bounded by `topK`), low/info → V0. Set `rungs.medium: 'V1'` only when this
+     task's mediums are noise;
+   - **support rule:** a skeptic's CONFIRMED must carry its own support — `support
+     {file, line, quote}`, a verbatim quote it found (preferably not the producer's line),
+     or for an absence claim `support_cmd`, the exact search that came back empty. The
+     foreman keeps an unsupported CONFIRMED as PLAUSIBLE ("confirmed without own
+     support"), and `check-evidence.mjs` drops a CONFIRMED whose support quote does not
+     resolve to PLAUSIBLE;
    - a deterministic re-check (tie-out, tests, grep count, set-equality) replaces a
      verifier whenever one exists;
    - **a tie-out proves arithmetic, not semantics.** Tax-code reading, join choice, sign
@@ -140,8 +149,15 @@ CLAUDE.md files can reach tens of thousands of tokens per subtree, re-read on ev
 
 | ctx | Agent | Use for | What the agent gets |
 |---|---|---|---|
-| `omit` (default) | `worker`, `skeptic`, `inspector` — or `worker-mcp` when the unit's vector has T2 | everything not listed below, **parity units included** | `omitClaudeMd` + the shared **rules capsule**: the unit's constraints ("the billing system is read-only", "never print credentials") and `path:line` pointers to the CLAUDE.md sections it may need, read on demand |
-| `keep` | `worker-ctx`, `implementer` | G2 units whose traps the capsule cannot state; every implementer | full CLAUDE.md, so its domain knowledge matches ultracode's |
+| `omit` (default) | `worker`, `skeptic`, `inspector` — or `worker-mcp` when the unit's vector has T2 | everything not listed below, **parity units included** | `omitClaudeMd` + the shared **rules capsule**: the unit's constraints ("the billing system is read-only", "never print credentials") and `path:line` pointers to the CLAUDE.md sections it may need, read on demand with `nl -ba FILE \| sed -n 'A,Bp'`. No Read tool, so no nested CLAUDE.md is attached |
+| `keep` | `worker-ctx`, `implementer` | G2 units whose traps the capsule cannot state; every implementer | full CLAUDE.md, plus the nested chain Read attaches, so its domain knowledge matches ultracode's |
+
+**Why the lean crew has no Read.** `omitClaudeMd` drops only the CLAUDE.md files loaded at
+start; the Read tool attaches every CLAUDE.md between the session cwd and the file read.
+On a measured research run a ~350 KB nested CLAUDE.md grew 15 of 23 lean agents from ~8k
+to ~150k tokens of context, about 2/3 of the crew's cost. Bash (`grep -n`, `nl -ba | sed
+-n`) attaches nothing. This needs read-only Bash in subagents; if it is refused, the
+agent returns `blocked` / `no_access` and the master re-runs it as `keep`.
 
 **Why parity no longer keeps CLAUDE.md.** In the first real run, CLAUDE.md-kept agents
 started at ~85k tokens and re-read all of it on every turn; most of it was irrelevant to
@@ -149,7 +165,9 @@ the unit. Parity is about the *cell* (the same model and effort as ultracode), n
 paying for the whole CLAUDE.md: a capsule with the unit's rules and `path:line` pointers
 into the relevant CLAUDE.md sections gives the same knowledge, read on demand.
 
-- Put `ctxTok` (CLAUDE.md tokens on that unit's path) on every `keep` card so P is priced right.
+- Put `ctxTok` on every `keep` card so P is priced right: the tokens of that unit's own
+  chain from `scripts/claude-md-chain.mjs <session-cwd> <unit paths>` (the CLAUDE.md files
+  its Reads will attach), not a global guess. Without it the unit falls back to `ultra.ctxTok`.
 - A `keep` unit runs on `worker-ctx` (full tools, 15k prefix + `ctxTok`), never the lean `worker`.
 - Pack `keep` units in the same subtree together: one 66k context, not three.
 - A capsule pointer beats `keep` whenever the trap fits in one line (G1).

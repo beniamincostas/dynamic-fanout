@@ -81,21 +81,22 @@ it never overrides the rails in `workflow.md`.
 
 ```js
 verify: {
-  rungs: { blocker: 'V3', high: 'V3', medium: 'V1', low: 'V0', info: 'V0' },
+  rungs: { blocker: 'V3', high: 'V3', medium: 'V2', low: 'V0', info: 'V0' },
   cells: { V3: { effort: 'high' } },     // W·high; parity claims run S·high automatically
   topK: 12, batch: 3,
-  expected: 4                             // ≈ ceil(nUnits·highsPerUnit / batch); mediums
-                                           //   add nothing at the V1 default (see below)
+  expected: 8                             // ≈ ceil(nUnits·highsPerUnit / batch) for highs
+                                           //   + ceil(min(nUnits·4, topK) / batch) for mediums
 }
 ```
 
 - V1 first: the inspector grounds every quote; tests or a grep count replace a skeptic
-  whenever they decide the claim. **`medium` defaults to V1** — a grounded quote, no
-  skeptic — because a typical review produces far more mediums than the verification
-  budget can afford to put a skeptic on (measured: ~4/unit). Raise specific mediums to V2
-  (a `V2` token in that unit's `check`) or the whole severity (`rungs.medium: 'V2'`) when
-  those findings matter enough to spend one.
-- Rungs come from `verify.rungs` by severity (blocker/high default V3, medium V1), not from
+  whenever they decide the claim. **`medium` defaults to V2** since 0.1.4 — one skeptic at
+  the producer's model·medium — because lean skeptics read through Bash and cost a
+  fraction of what they did; a review still produces ~4 mediums per unit, so `topK`
+  bounds how many get one. Drop to V1 (`rungs.medium: 'V1'`) only when mediums are noise.
+- A skeptic's CONFIRMED needs its own support quote (or, for "X is missing", the empty
+  search it ran); without one the foreman keeps the finding PLAUSIBLE.
+- Rungs come from `verify.rungs` by severity (blocker/high default V3, medium V2), not from
   depth on their own. `quick`: nothing to lower further at the default. `standard`: the
   defaults above. `deep`: give the units whose findings drive the recommendation a `V4`
   token in `check` — `check` can name `V2`/`V3`/`V4` to floor that unit's claims there

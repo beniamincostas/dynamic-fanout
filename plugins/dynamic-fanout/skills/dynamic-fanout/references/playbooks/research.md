@@ -65,20 +65,22 @@ Declare in `verify`:
 
 ```js
 verify: {
-  rungs: { blocker: 'V3', high: 'V3', medium: 'V1', low: 'V0', info: 'V0' },
+  rungs: { blocker: 'V3', high: 'V3', medium: 'V2', low: 'V0', info: 'V0' },
   cells: { V3: { effort: 'high' } },     // W·high; model omitted = S on an Opus session
   topK: 8, batch: 3,
-  expected: 2                             // ≈ ceil(nUnits·highsPerUnit / batch) — the
-                                           //   claims that carry the answer
+  expected: 5                             // ≈ ceil(nUnits·highsPerUnit / batch) for the
+                                           //   claims that carry the answer + ceil(topK / batch) for mediums
 }
 ```
 
 - Severity in research = how much the claim carries the answer: `high` for the claims the
   answer rests on, `medium` for supporting context, `low`/`info` for background.
 - V1 (inspector quote check) runs for every claim with a quote; it is the main defence
-  against confident fabrication, which is the dominant research failure. It is also the
-  **default rung for medium**, so a supporting-context claim is grounded but not
-  skeptic-checked unless you raise it (`rungs.medium: 'V2'`, or a `V2` token in `check`).
+  against confident fabrication, which is the dominant research failure. Since 0.1.4 the
+  **default rung for medium is V2**: a supporting-context claim also gets one lean skeptic
+  (within `topK`), whose CONFIRMED must carry its own support quote or, for an absence
+  claim, the empty search it ran. Lower it (`rungs.medium: 'V1'`) only for background-heavy
+  questions.
 - Cross-file or causal claims ("X is set here and read there") go to V3; single-site
   lookups stay at V1. Mark them `high`, not `medium`, if they carry the answer — a `high`
   severity is what exempts a claim from `topK` and reserves it a skeptic by default.

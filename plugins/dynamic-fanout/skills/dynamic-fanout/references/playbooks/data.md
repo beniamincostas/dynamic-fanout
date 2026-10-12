@@ -87,8 +87,9 @@ verify: { rungs: { blocker: 'V3', high: 'V3', medium: 'V1', low: 'V0', info: 'V0
           cells: { V3: { effort: 'high' } }, topK: 8, batch: 3, expected: 1 }
 ```
 
-- Numbers are verified by tie-out and re-derivation (V1), not by skeptics; `medium`'s V1
-  default costs nothing extra on top of that. `expected` counts only the semantic claims
+- Numbers are verified by tie-out and re-derivation (V1), not by skeptics, so data runs
+  set `medium: 'V1'` explicitly (the foreman's default is V2 since 0.1.4); it costs
+  nothing extra on top of the tie-out. `expected` counts only the semantic claims
   that need V3 — raise a mismatch or a borderline reading to `medium: 'V2'`/`check: 'V2'`
   only if a skeptic (not a re-derivation) is the right check for it.
 - Sweep: usually `rounds: 0`; the anomaly scan is the sweep. At deep, 1 round asking

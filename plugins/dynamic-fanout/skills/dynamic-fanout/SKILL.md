@@ -83,17 +83,18 @@ Why: in a benchmark, a solo review cost under 0.15× ultracode but missed exactl
 
 ## 2. Scout and pack (at most 2 batched turns)
 
-1. **Scout with Glob / `grep -l` / `grep -c` / `wc -c` / `git ls-files`.** Tokens ≈ bytes / 4, and count the CLAUDE.md files on each unit's path. Never read what a worker will read; that is paid twice.
-2. In the same batch, run `node <scripts>/stats.mjs --summary <kind>` for routing history. If it prints a `CALIB` line, pass that object as `args.calib` (it carries `scaleByRole` — the measured actual ÷ estimate ratio per work/verify/inspect role — or a legacy `scale`).
-3. Exclude `.env`, key files, duplicate copies of the same code (vendored or mirrored folders) and generated `output/`, unless one of them is the target.
-4. **Pack:**
+1. **Scout with Glob / `grep -l` / `grep -c` / `wc -c` / `git ls-files`.** Tokens ≈ bytes / 4. Never read what a worker will read; that is paid twice.
+2. **Measure each unit's CLAUDE.md chain** in the same batch: `node <scripts>/claude-md-chain.mjs <session-cwd> <unit paths…>` lists the CLAUDE.md files a Read-capable agent gets attached for those paths (every one between the session cwd and the file), with bytes and tokens. A `ctx:'keep'` card carries that chain's tokens as its own `ctxTok`. Lean (`ctx:'omit'`) units read through Bash, which attaches nothing, so they pay no nested CLAUDE.md.
+3. In the same batch, run `node <scripts>/stats.mjs --summary <kind>` for routing history. It prints a `CALIB {"pm":N,"scaleByRole":{…}}` line only when the stored calibration was learned under the current price model; pass that object verbatim as `args.calib` (`pm` is what makes the foreman honour it; factors from another price model are ignored with a warning).
+4. Exclude `.env`, key files, duplicate copies of the same code (vendored or mirrored folders) and generated `output/`, unless one of them is the target.
+5. **Pack:**
    - split a unit off only if its work is ≥2× its path's fixed context;
    - keep same-subtree units together, so a nested CLAUDE.md is paid once;
    - keep each agent's planned turns under its cap: on a worker ≲50k tokens of reading at high, ≲65k at medium, ≲95k at low, or 25 files.
-5. **Count U honestly:**
+6. **Count U honestly:**
    - `ultra.agents` = how many agents ultracode would spawn: one per independent question, dimension or file cluster;
    - `ultra.verifiers` ≈ one per ~3 expected findings;
-   - `ultra.ctxTok` = bytes/4 of every CLAUDE.md an un-omitted agent loads: `~/.claude/CLAUDE.md`, `~/.claude/rules/*.md`, the project root one and every nested one on the path (`wc -c` them in the scouting batch);
+   - `ultra.ctxTok` = bytes/4 of every CLAUDE.md an un-omitted agent loads: `~/.claude/CLAUDE.md`, `~/.claude/rules/*.md`, the project root one (`wc -c` them) plus the largest nested chain `claude-md-chain.mjs` printed (ultracode's agents use Read, so they pay it);
    - `ultra.inAvg` = mean tokens an ultracode agent would read (default 40000 if omitted, which mis-prices most runs);
    - each card's `in` = bytes/4 of its scope files.
    - Print the basis in one line. The foreman prices it; never inflate it to loosen your own ceiling.
@@ -115,8 +116,8 @@ At ≥3 units, read `references/routing.md` and follow it. In short:
   - On a Fable session only parity units may use a fable cell (`p` or `fb`); everything else stays ≤ W = opus.
   - It is `null` for parity units, superseding units, peripheral B0 units, and when `p` ≥ W·high (strengthen the check instead).
   - Units that carry the answer get a non-null `fb`, unless `p` ≥ W·high.
-- **Context:** `ctx:'omit'` is the default, parity included: put the unit's constraints in the shared **rules capsule** plus `path:line` pointers into the CLAUDE.md sections it may need (read on demand). Use `ctx:'keep'` only for a G2 unit whose traps the capsule cannot state.
-- **Verifiers:** a verifier's model must be ≥ every non-parity unit's `p` **and** `fb` model. Declare the rungs (`verify.rungs`) and `verify.cells.V3/V4` (default W·high). `medium` defaults to **V1** (grounded quote, no skeptic) — raise it to V2 (`rungs.medium` or a `V2` token in `check`) only for mediums that matter enough to spend one; a typical review has far more mediums than the reserve can check.
+- **Context:** `ctx:'omit'` is the default, parity included: put the unit's constraints in the shared **rules capsule** plus `path:line` pointers into the CLAUDE.md sections it may need, which the agent reads on demand with `nl -ba FILE | sed -n 'A,Bp'`. The lean crew cannot use Read: Read attaches every nested CLAUDE.md on a file's path even with `omitClaudeMd` (on a measured run a ~350 KB nested CLAUDE.md grew lean agents from ~8k to ~150k tokens of context). Use `ctx:'keep'` only for a G2 unit whose traps the capsule cannot state, and give it its chain's `ctxTok`.
+- **Verifiers:** a verifier's model must be ≥ every non-parity unit's `p` **and** `fb` model. Declare the rungs (`verify.rungs`) and `verify.cells.V3/V4` (default W·high). `medium` defaults to **V2** (one skeptic at the producer's model·medium; lean skeptics reading through Bash are cheap), and `topK` still bounds how many mediums get one — lower it to V1 (`rungs.medium`) only when mediums are noise for this task. A skeptic's CONFIRMED counts only with its **own support**: a verbatim quote it found (`support`), or for an absence claim the empty search it ran (`support_cmd`); without it the foreman keeps the claim PLAUSIBLE.
 - **Cells:** use ≤2 cells per stage so agents share a prompt cache. Merge the smallest cell *up*, never down.
 - **`why`:** every card carries one (≤140 chars) naming the feature that decided its route.
 
@@ -137,7 +138,7 @@ ultracode basis: 8 = 5 clusters + 3 dimensions, 4 verifiers · U $40.53 · plan 
 u1      opus·xhigh (parity) → —     omit · V3     30t  recall unverifiable; marks invoices paid
 u2-u4   sonnet·medium → opus·high   omit · quote  18-24t  C1, quotes catch misses
 u6      sonnet·low → sonnet·medium  omit · set    10t  grep set-equality
-verify: blocker/high→V3 (opus·high), medium→V1 (quote) · topK 12 · sweep 1
+verify: blocker/high→V3 (opus·high), medium→V2 (skeptic) · topK 12 · sweep 1
 override: --route u4=opus·high · --ceiling 5 · --solo · or just let it run
 ```
 
@@ -158,14 +159,15 @@ If the session is Sonnet at standard or deep depth, add the line `advisory: /mod
   3. Run `stage: 'verify'` with the same args, plus `claims` (from `results.claims`, with severities re-weighted if you must) and `carry` = `{...digest.money, invariants: digest.invariants}` from the work stage. Stage 'verify' does not re-evaluate invariants; it reports `carry.invariants`.
 - **Rails rejection** (`reason: 'rails'`): fix the plan **once**, using the error texts. If it fails again, narrow verification or go solo. Never loosen a parity unit to fit the money check.
 - **Agent rung** (no Workflow opt-in):
-  - Use the effort-pinned agents with the model passed per call: `dynamic-fanout:worker-low|worker-medium|worker-high`, `worker-mcp` for T2 (MCP or long tool loops), `worker-ctx` (medium) / `worker-ctx-xhigh` for `ctx:'keep'`, `skeptic` / `skeptic-high`, `inspector` (for `quote` checks and B2 units), `implementer-medium|implementer-high`. `worker`/`worker-low|medium|high` and `skeptic`/`skeptic-high` carry a plain `Grep, Glob, Bash` tool allowlist (cheaper: no MCP schemas in the prefix; no `Read`, which attaches every nested CLAUDE.md on a file's path, so they read line ranges through Bash), as do `inspector` and `reviewer`; `worker-mcp` gets every tool minus `Read, Edit, Write, NotebookEdit, Agent`, and `worker-ctx*` every tool minus `Edit, Write, NotebookEdit, Agent`.
+  - Use the effort-pinned agents with the model passed per call: `dynamic-fanout:worker-low|worker-medium|worker-high`, `worker-mcp` for T2 (MCP or long tool loops), `worker-ctx` (medium) / `worker-ctx-xhigh` for `ctx:'keep'`, `skeptic` / `skeptic-high`, `inspector` (for `quote` checks and B2 units), `implementer-medium|implementer-high`. `worker`/`worker-low|medium|high` and `skeptic`/`skeptic-high` carry a plain `Grep, Glob, Bash` tool allowlist (cheaper: no MCP schemas in the prefix; no `Read`, which attaches every nested CLAUDE.md on a file's path, so they read line ranges through Bash), as do `inspector` and `reviewer`; `worker-mcp` gets every tool minus `Read, Edit, Write, NotebookEdit, Agent`, and `worker-ctx*` every tool minus `Edit, Write, NotebookEdit, Agent`. `worker-ctx*` and `implementer*` keep Read (they pay their CLAUDE.md on purpose).
+  - **Requirement:** the lean crew needs read-only Bash in subagents (auto mode, or allow rules for `nl`, `sed -n`, `grep`). If Bash is refused, the agents return `blocked` with `no_access`; re-run those units as `ctx:'keep'` (priced with their chain's `ctxTok`) rather than dropping them.
   - Snap the card's effort **up** to the nearest file and log `snap`, but never above E_ref: if no file fits, take the nearest one at or below E_ref and log `snap-down`. A parity card with no exact file runs with the default agent type and an explicit effort (or in-context).
   - Apply the failure classes yourself (workflow.md table), with the same one-re-route limit.
 - **Implement:** follow `playbooks/implement.md`. Build implement args v1 (themes, worktree, test command, ceiling; the baseline test run comes first) and call `Workflow({ name: 'dynamic-fanout:implement', args })`. Launch `dryRun: true` first, show the priced card (per-theme estimate + the review's, against `caps.ceilingUsd`), and confirm with the user before the real run. The workflow prices itself through the foreman (`kind:'implement'`, `dryRun:true`), runs each theme serially under the ceiling with at most one repair pass on its pre-chosen fallback, then one independent whole-diff review on the `dynamic-fanout:reviewer` agent. Always ask the user before any merge or deploy. For several themes after a review, recommend a **fresh session per theme**: this skill runs at `effort: max`, and one long session re-reads its growing context on every turn.
 
 ## 6. Review the digest (exceptions only, at most one turn)
 
-Read `digest`. Read `results.claims` only to forward it to `stage:'verify'` or for a specific exception row; never read transcripts.
+Read `digest`, and read results in one call with `node <scripts>/report.mjs <output-file>` (per-unit rows + claims by severity; `--unit <id>`, `--min-severity`, `--verdict`, `--payload`, `--json`) instead of digging claims and unit payloads out of the result JSON. Forward `results.claims` only to `stage:'verify'`; never read transcripts.
 
 | Digest row | Your action |
 |---|---|
@@ -183,19 +185,21 @@ Run superseding units in one follow-up `stage:'all'` workflow on one cell, with 
 
 ## 7. Close (one Bash call), then synthesize
 
-The Workflow tool result (or its task notification) names the output file, the transcript dir and the run id; copy them from there. `--root` is your session cwd (evidence paths are relative to it), never a nested git root. Run all three scripts in one call, with the absolute path spelled out (no shell variables):
+The Workflow tool result (or its task notification) names the output file, the transcript dir and the run id; copy them from there. `--root` is your session cwd (evidence paths are relative to it), never a nested git root. Run all four scripts in one call, with the absolute path spelled out (no shell variables):
 
 ```bash
 node <base>/../../scripts/check-evidence.mjs <output-file> --root <session-cwd> --write <output-file>.audited.json \
  && node <base>/../../scripts/ledger-cost.mjs <transcript-dir> --json > <output-file>.cost.json \
- && node <base>/../../scripts/stats.mjs update <output-file>.audited.json --kind <kind> --ledger <output-file>.cost.json
+ && node <base>/../../scripts/stats.mjs update <output-file>.audited.json --kind <kind> --ledger <output-file>.cost.json \
+ && node <base>/../../scripts/report.mjs <output-file>.audited.json --min-severity medium
 ```
 
 **Deep runs** have two outputs. Run `check-evidence` on the verify-stage output, `ledger-cost` on both transcript dirs, and `stats update` on the work-stage output with its `results.claims` replaced by the audited verify-stage claims (a one-line `node -e` merge into `<work-output>.merged.json`). The verify output alone has no units, and stats skips it.
 
 - `check-evidence` only ever **downgrades**: a claim whose quote does not exist becomes UNVERIFIED.
 - `ledger-cost` gives the actual dollars per unit and per model (read the `.cost.json`).
-- `stats` records first-pass success per cohort, and with `--ledger` the actual ÷ estimate ratio that becomes the next run's `CALIB` `scale`.
+- `stats` records first-pass success per cohort, and with `--ledger` the actual ÷ estimate ratio per role (work, sweep, verify, inspect), keyed by price model, that becomes the next run's `CALIB` `scaleByRole`.
+- `report` prints the audited claims (with each skeptic's support) for the synthesis; read nothing else from the JSON.
 - Spot-read at most 3 snippets of ≤60 lines, and only to settle a split V4 verdict or a high-impact conflict.
 
 **Report**, in this order:
@@ -218,6 +222,8 @@ You run at max effort, so spend it on the **two** hard turns, the plan and the s
 - batch scouting;
 - give counts and sizes, and let the foreman do the arithmetic;
 - read the digest only.
+
+**Large master context:** when your own context is already very large, every master turn re-reads it, so each turn costs more than a crew agent. Plan in at most 3 turns (scout, route + launch, close + synthesize) and read results only through `report.mjs`.
 
 **Don't:**
 - read files a worker will read;

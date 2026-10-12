@@ -42,7 +42,8 @@ envelope the implement playbook budgets against.
     n: 0,                                // 1 = numbers must tie out -> planned re-derivation
     scope: { files: ['path/a.py', 'path/b.py'] },
     in: 38000,                           // est. tokens this unit reads
-    ctxTok: 30000,                       // optional; CLAUDE.md tokens on THIS unit's path
+    ctxTok: 30000,                       // ctx keep: tokens of THIS unit's CLAUDE.md chain, from
+                                         //   scripts/claude-md-chain.mjs (else ultra.ctxTok)
     ctx: 'omit' | 'keep',                // keep = CLAUDE.md loaded (worker-ctx)
     p:  { model?, effort },              // primary cell; model omitted = S
     fb: { model?, effort } | null,       // the ONE fallback, chosen now
@@ -54,11 +55,11 @@ envelope the implement playbook budgets against.
     schema: { ... }                      // optional JSON Schema for the free `result` field
   }],
   verify: {
-    rungs: { blocker: 'V3', high: 'V3', medium: 'V1', low: 'V0', info: 'V0' },
+    rungs: { blocker: 'V3', high: 'V3', medium: 'V2', low: 'V0', info: 'V0' },
     cells: { V3: { model?, effort }, V4: { model?, effort } },
-    //  medium defaults to V1 (grounded quote, no skeptic) since 0.1.2 — raise it to V2
-    //  in rungs.medium, or float a V2 token in a unit's check, when those findings
-    //  matter enough to verify; V2 = max(producer model, sonnet)·min(medium, refEffort);
+    //  medium defaults to V2 since 0.1.4 (V1 in 0.1.2-0.1.3): one lean skeptic per batch,
+    //  bounded by topK; set rungs.medium 'V1' to skip skeptics for mediums;
+    //  V2 = max(producer model, sonnet)·min(medium, refEffort);
     //  default V3 = W·min(high, refEffort); default V4 = V3 (same cell, two lenses)
     topK: 12, batch: 3, expected: 6
     //  topK default: quick 6 / standard 12 / deep 25 (parity claims are never cut by it)
@@ -66,7 +67,7 @@ envelope the implement playbook budgets against.
     //  expected default (0.1.2, risk-weighted — see economics.md): highs + mediums, where
     //  highs = ceil(nUnits·highsPerUnit / batch) (every expected high is checked; highs
     //  are exempt from topK) and mediums = ceil(min(nUnits·mediumsPerUnit, topK) / batch)
-    //  but only when rungs.medium is V2 or above (0 at the V1 default); pricing only —
+    //  but only when rungs.medium is V2 or above (the default; 0 at V1); pricing only —
     //  it does not cap how many verifier calls actually run
   },
   sweep:  { rounds: 1, cell: { model?, effort } },
@@ -78,9 +79,10 @@ envelope the implement playbook budgets against.
   overrides: [{ id: 'u2', p: { model: 'opus', effort: 'high' }, fb: null, by: 'user' }],
   //  an override's `p` with no `fb` clears any old fallback (fb becomes null) — a
   //  re-route target needs no fb of its own; `by` is free text, any value exempts rails
-  calib: { /* optional; pass back the CALIB line from stats --summary (scaleByRole, or
-            legacy scale), see economics.md. The returned card always carries the
-            factors it priced with as card.calib: {scale, scaleByRole} */ },
+  calib: { /* optional; pass back the CALIB line from stats --summary verbatim:
+            {pm, scaleByRole}. scale/scaleByRole are honoured only when pm equals the
+            foreman's PRICE_MODEL (3); otherwise they are dropped with a warning. The
+            returned card always carries card.calib: {pm, scale, scaleByRole} */ },
   agentTypes: { worker, workerCtx, workerMcp, implementer, skeptic, inspector },  // optional overrides
   claims: [ /* stage 'verify' only: results.claims from the 'work' stage, unchanged */ ],
   carry:  { committedUsd: 0, rerouteUsd: 0, invariants: [] }
@@ -272,6 +274,14 @@ radius.
 | V4 | 2 skeptics with different lenses on `verify.cells.V4` (default = V3's cell) | same verdict from both → that verdict; any disagreement involving REFUTED → UNVERIFIED `split` (master spot-reads); any other disagreement → PLAUSIBLE; one lens returned nothing → the other lens's verdict alone |
 
 REFUTED without a `counter_quote {file, line, quote}` is downgraded to PLAUSIBLE.
+CONFIRMED without the skeptic's own support — `support {file, line, quote}` (a verbatim
+quote it found) or, for an absence claim, `support_cmd` (the empty search it ran) — is
+kept as PLAUSIBLE (`reason` starts "confirmed without own support"); in a V4 panel such a
+lens cannot carry the CONFIRMED. `check-evidence.mjs` audits `support` like
+`counter_quote` and drops an unresolved one's CONFIRMED to PLAUSIBLE (`support_cmd` is not
+audited). Evidence, `counter_quote` and `support` paths are canonicalized to the spelling
+under Scope (`toScope`) before claims are stored, so one file cited absolute in one unit
+and repo-relative in another dedups to one claim.
 `UNVERIFIABLE` from a skeptic becomes UNVERIFIED. The V2 cell is not checked by the
 `verify:` rails (only V3/V4 are).
 
@@ -309,7 +319,7 @@ then a unique suffix match), so a worker citing `fanout.js` for the scoped
     counts: { units, ok, okRerouted, okPromoted, brief, unverified, claims,
               confirmed, plausible, refuted, unverifiedClaims, pending },
     exceptions: [{ id, cls, reason, cell, why }],     // every non-ok unit
-    top: [{ cid, unit, severity, title, verdict, file, line }],
+    top: [{ cid, unit, severity, title, verdict, file, line, support }],   // support = 'file:line' or support_cmd
     money: { U, P, R, C, parityBound, committedUsd, rerouteUsd, verifyUsd, outputTokens, note },
     //  committedUsd includes verification spend; verifyUsd = the part drawn by verifiers
     warnings: [], dropped: [{ what, count, reason }],
@@ -326,9 +336,16 @@ then a unique suffix match), so a worker citing `fanout.js` for the scoped
     units: { u1: { status, summary, files_read, numbers, numbersStatus, numbersConflict,
                    result, assumptions, confidence, uncovered } },
     claims: [{ cid, unit, severity, verifiedSeverity, title, claim, evidence, rung,
-               verdict, verdictBy, reason, counter_quote, parity, producer, bump, blast,
-               floor, mergedFrom }] } }
+               verdict, verdictBy, reason, counter_quote, support, support_cmd, parity,
+               producer, bump, blast, floor, mergedFrom }] } }
 ```
+Read a result with `node scripts/report.mjs <output.json|audited.json>` (header, one row
+per unit with role, cell and outcome, claims sorted by severity with their support;
+`--unit <id>`, `--min-severity <s>`, `--verdict CONFIRMED,PLAUSIBLE`, `--payload`,
+`--json`) instead of digging through the nested JSON. Before planning, `node
+scripts/claude-md-chain.mjs <session-cwd> <paths…> [--json]` lists the CLAUDE.md chain a
+Read-capable agent gets attached for those paths, with bytes and tokens (deduped chains,
+overall max last): the per-unit `ctxTok` of a `ctx:'keep'` card.
 `outcome` ∈ `ok | ok-rerouted | ok-promoted | brief | unverified`. A data unit with
 `n:1` whose derivations disagree (and no `fb` has repaired it yet) carries
 `numbersConflict: { primary, rederived, fallback: null }` — both derivations are kept
