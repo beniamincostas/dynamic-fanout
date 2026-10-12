@@ -346,7 +346,7 @@ test('capability failure then success: ok-rerouted, claims bumped one rung', asy
   }))
   assert.equal(res.ledger.units.find(l => l.id === 'u1').outcome, 'ok-rerouted')
   const claim = res.results.claims.find(c => c.unit === 'u1')
-  assert.equal(claim.rung, 'V2', 'medium (V1) + 1 for the re-route')
+  assert.equal(claim.rung, 'V3', 'medium (V2) + 1 for the re-route')
   const repair = calls.find(c => tagOf(c.prompt) === 'u1:2')
   assert.match(repair.prompt, /Fresh attempt|Repair/)
 })
@@ -485,8 +485,53 @@ test('V4: a split panel ends UNVERIFIED for the master', () => {
   const v = core.mergeVerdicts([{ verdict: 'CONFIRMED', reason: 'a' }, { verdict: 'REFUTED', reason: 'b', counter_quote: { file: 'f', line: 1, quote: 'q' } }])
   assert.equal(v.verdict, 'UNVERIFIED')
   assert.equal(v.split, true)
-  assert.equal(core.mergeVerdicts([{ verdict: 'CONFIRMED' }, { verdict: 'CONFIRMED' }]).verdict, 'CONFIRMED')
+  const sup = { support: { file: 'f', line: 2, quote: 'x' } }
+  assert.equal(core.mergeVerdicts([{ verdict: 'CONFIRMED', ...sup }, { verdict: 'CONFIRMED', support_cmd: 'grep -n y f' }]).verdict, 'CONFIRMED')
   assert.equal(core.normalizeVerdict({ verdict: 'REFUTED', reason: 'no' }).verdict, 'PLAUSIBLE')
+})
+
+test('CONFIRMED needs the skeptic\'s own support: without it the verdict is kept as PLAUSIBLE', () => {
+  const bare = core.normalizeVerdict({ cid: 'a', verdict: 'CONFIRMED', reason: 'looked' })
+  assert.equal(bare.verdict, 'PLAUSIBLE')
+  assert.equal(bare.reason, 'confirmed without own support: looked')
+  const quoted = core.normalizeVerdict({ verdict: 'CONFIRMED', reason: 'r', support: { file: 'f', line: 1, quote: 'q' } })
+  assert.equal(quoted.verdict, 'CONFIRMED')
+  assert.equal(core.normalizeVerdict({ verdict: 'CONFIRMED', reason: 'r', support_cmd: 'grep -rn retry src/' }).verdict, 'CONFIRMED')
+  assert.equal(core.normalizeVerdict({ verdict: 'CONFIRMED', reason: 'r', support: { file: 'f', line: 1 }, support_cmd: ' ' }).verdict, 'PLAUSIBLE', 'a quote-less support and a blank command do not count')
+  // the schema and the skeptic rules ask for it
+  const item = core.VERDICT.properties.verdicts.items.properties
+  assert.deepEqual(item.support, core.EVIDENCE)
+  assert.equal(item.support_cmd.maxLength, 200)
+  assert.match(core.SKEPTIC_RULES, /support_cmd/)
+  assert.match(core.SKEPTIC_RULES, /Without support, use PLAUSIBLE/)
+})
+
+test('V4: a lens that confirms without support makes the panel PLAUSIBLE', () => {
+  const v = core.mergeVerdicts([
+    { verdict: 'CONFIRMED', reason: 'a', support: { file: 'f', line: 2, quote: 'x' } },
+    { verdict: 'CONFIRMED', reason: 'b' },
+  ])
+  assert.equal(v.verdict, 'PLAUSIBLE')
+  assert.match(v.reason, /confirmed without own support/)
+})
+
+test('foreman: an unsupported CONFIRMED lands PLAUSIBLE; support is carried to results and digest', async () => {
+  const quote = { file: 'src/b.py', line: 11, quote: 'other line' }
+  const base = responder({
+    'u2:1': okUnit({ files_read: ['src/b.py'], findings: [finding('src/b.py', 10, 'high', 'h1'), finding('src/b.py', 90, 'high', 'h2')] }),
+  })
+  // the skeptic quotes support for h1 only and confirms h2 on its say-so
+  const skeptic = p => ({ verdicts: verdictAll(p, 'CONFIRMED', { support_cmd: undefined }).verdicts.map(v => (
+    / \| h1$/m.test(p.split(`${v.cid} |`)[1].split('\n')[0]) ? { ...v, support: quote } : v)) })
+  const { res } = await runFanout(baseArgs({ verify: { cells: { V3: { effort: 'high' } } } }),
+    (p, o, n) => (tagOf(p).startsWith('v:') ? skeptic(p) : base(p, o, n)))
+  const by = t => res.results.claims.find(c => c.title === t)
+  assert.equal(by('h1').verdict, 'CONFIRMED')
+  assert.deepEqual(by('h1').support, quote)
+  assert.equal(by('h2').verdict, 'PLAUSIBLE')
+  assert.match(by('h2').reason, /^confirmed without own support: /)
+  assert.equal(res.digest.top.find(t => t.title === 'h1').support, 'src/b.py:11')
+  assert.equal(res.digest.counts.confirmed, 1)
 })
 
 test('dedup merges claims on the same file and line bucket, keeping the higher severity', () => {
@@ -714,12 +759,25 @@ test('the priced card carries the calibration factors it used', async () => {
   assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 0.6, verify: 0.2, inspect: 0.5, sweep: 0.8 } })
 })
 
-test('medium defaults to rung V1: grounded, no skeptic launched', async () => {
-  assert.equal(core.DEFAULT_RUNGS.medium, 'V1')
-  assert.equal(core.validate(baseArgs()).rungs.medium, 'V1')
-  assert.equal(core.rungFor({ severity: 'medium' }, core.DEFAULT_RUNGS), 'V1')
+test('medium defaults to rung V2 (0.1.4): one skeptic per medium', async () => {
+  assert.equal(core.DEFAULT_RUNGS.medium, 'V2')
+  assert.equal(core.validate(baseArgs()).rungs.medium, 'V2')
+  assert.equal(core.rungFor({ severity: 'medium' }, core.DEFAULT_RUNGS), 'V2')
   assert.equal(core.rungFor({ severity: 'high' }, core.DEFAULT_RUNGS), 'V3')
+  assert.equal(core.topKExempt({ severity: 'medium' }, core.DEFAULT_RUNGS), false, 'topK still bounds mediums')
   const { res, calls } = await runFanout(baseArgs(), responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'medium', 'mid')] }),
+  }))
+  const c = res.results.claims.find(x => x.title === 'mid')
+  assert.equal(c.rung, 'V2')
+  assert.equal(c.verdict, 'CONFIRMED')
+  assert.equal(calls.filter(x => tagOf(x.prompt).startsWith('v:')).length, 1)
+})
+
+test('a master can still pin medium to V1: grounded, no skeptic launched', async () => {
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V1' } } })
+  assert.equal(core.validate(a).rungs.medium, 'V1')
+  const { res, calls } = await runFanout(a, responder({
     'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'medium', 'mid')] }),
   }))
   const c = res.results.claims.find(x => x.title === 'mid')
@@ -753,16 +811,18 @@ test('blocker/high claims are exempt from topK; topK bounds only the remaining V
 test('price: expected verifier batches follow the expected findings', () => {
   const K = core.calibrate()
   const R = core.DEFAULT_RUNGS
-  // 8 units, standard (batch 3, topK 12): ceil(8·0.9/3) = 3 batches for highs, mediums at V1 → 0
-  assert.equal(core.expectedVerifiers(8, 'standard', {}, R, K), 3)
-  // medium at V2: + ceil(min(8·4, 12)/3) = 4
+  // 8 units, standard (batch 3, topK 12): ceil(8·0.9/3) = 3 batches for highs, mediums at the
+  // V2 default: + ceil(min(8·4, 12)/3) = 4
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, R, K), 7)
   assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V2' }, K), 7)
+  // a medium pinned to V1 reserves none
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V1' }, K), 3)
   // explicit batch and topK
   assert.equal(core.expectedVerifiers(8, 'standard', { batch: 5, topK: 8 }, { ...R, medium: 'V3' }, K), 2 + 2)
   // quick depth: batch 5, topK 6
   assert.equal(core.expectedVerifiers(4, 'quick', {}, { ...R, medium: 'V2' }, K), 1 + 2)
   // price() uses it when verify.expected is absent, and honours an explicit one
-  const a = baseArgs()
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V1' } } })
   assert.equal(core.price(a, core.validate(a), K).expected, Math.ceil(2 * 0.9 / 3))
   const b = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' } } })
   assert.equal(core.price(b, core.validate(b), K).expected, 1 + Math.ceil(Math.min(2 * 4, 12) / 3))

@@ -8,6 +8,10 @@
 // collapsed in that window. A quote found only elsewhere in the file reports `foundAt` but
 // stays unresolved (a drifted line is not grounded evidence).
 // REFUTED verdicts: an unresolved counter_quote downgrades REFUTED -> PLAUSIBLE.
+// CONFIRMED verdicts: a skeptic's own `support` quote is audited exactly like counter_quote;
+// an unresolved one downgrades CONFIRMED -> PLAUSIBLE (reason 'support'). support_cmd (the
+// empty search behind an absence claim) is not audited, and a missing support is the
+// foreman's job (it never lets an unsupported CONFIRMED through).
 // CONFIRMED / PLAUSIBLE with any unresolved evidence quote -> UNVERIFIED (reason 'evidence').
 // A downgraded claim gets verdictBy 'check-evidence', a reason naming the failed quotes, and
 // keeps the verifier's verdict/reason/verdictBy in verdictBeforeAudit / reasonBeforeAudit /
@@ -175,7 +179,7 @@ function checkCounterQuote(cq, claim, root, cache, opts) {
 }
 
 /** One line naming the quotes that did not resolve, e.g. "src/a.py:3 quote not found (it is at line 9)". */
-function reasonText(code, evid, cq) {
+function reasonText(code, evid, cq, sq) {
   const where = (e) => {
     const loc = `${e.file ?? '?'}:${e.line ?? '?'}`;
     if (e.foundAt != null) return `${loc} quote not at the cited line (it is at line ${e.foundAt})`;
@@ -183,6 +187,7 @@ function reasonText(code, evid, cq) {
   };
   const parts = [];
   if (cq && !cq.resolved) parts.push(`counter_quote ${cq.error === 'missing' ? 'missing' : where(cq)}`);
+  if (sq && !sq.resolved) parts.push(`support ${where(sq)}`);
   if (code === 'evidence') parts.push(...evid.filter((e) => !e.resolved).map(where));
   return parts.join('; ') || code;
 }
@@ -198,7 +203,7 @@ export function audit(result, { root = process.cwd() } = {}) {
   const src = result?.results?.claims;
   const claims = Array.isArray(src) ? structuredClone(src) : [];
   const resultsUnits = result?.results?.units ?? {};
-  const report = { claims: 0, quotes: 0, resolved: 0, counterQuotes: 0, counterResolved: 0, downgrades: [], items: [] };
+  const report = { claims: 0, quotes: 0, resolved: 0, counterQuotes: 0, counterResolved: 0, supportQuotes: 0, supportResolved: 0, downgrades: [], items: [] };
 
   for (const c of claims) {
     report.claims++;
@@ -218,6 +223,13 @@ export function audit(result, { root = process.cwd() } = {}) {
       if (cq.resolved) report.counterResolved++;
       else { verdict = 'PLAUSIBLE'; reason = 'counter_quote'; }
     }
+    if (verdict === 'CONFIRMED' && c.support != null) {
+      const sq = checkCounterQuote(c.support, c, root, cache, opts);
+      item.support = sq;
+      report.supportQuotes++;
+      if (sq.resolved) report.supportResolved++;
+      else { verdict = 'PLAUSIBLE'; reason = 'support'; }
+    }
     if ((verdict === 'CONFIRMED' || verdict === 'PLAUSIBLE') && evid.some((e) => !e.resolved)) {
       verdict = 'UNVERIFIED';
       reason = 'evidence';
@@ -228,7 +240,7 @@ export function audit(result, { root = process.cwd() } = {}) {
       c.reasonBeforeAudit = c.reason ?? null;
       c.verdictByBeforeAudit = c.verdictBy ?? null;
       c.verdict = verdict;
-      c.reason = `check-evidence: ${reasonText(reason, evid, item.counterQuote)}`;
+      c.reason = `check-evidence: ${reasonText(reason, evid, item.counterQuote, item.support)}`;
       c.verdictBy = 'check-evidence';
       item.after = verdict;
       item.reason = reason;
@@ -262,7 +274,8 @@ export function patchOutput(doc, claims, report) {
   }
   res.evidenceAudit = {
     claims: report.claims, quotes: report.quotes, resolved: report.resolved, pctResolved: report.pctResolved,
-    counterQuotes: report.counterQuotes, counterResolved: report.counterResolved, downgrades: report.downgrades,
+    counterQuotes: report.counterQuotes, counterResolved: report.counterResolved,
+    supportQuotes: report.supportQuotes, supportResolved: report.supportResolved, downgrades: report.downgrades,
   };
   return out;
 }
@@ -270,7 +283,8 @@ export function patchOutput(doc, claims, report) {
 export function formatSummary(report) {
   const lines = [
     `check-evidence: ${report.claims} claims, quotes resolved ${report.resolved}/${report.quotes} (${report.pctResolved}%)` +
-      (report.counterQuotes ? `, counter-quotes ${report.counterResolved}/${report.counterQuotes}` : ''),
+      (report.counterQuotes ? `, counter-quotes ${report.counterResolved}/${report.counterQuotes}` : '') +
+      (report.supportQuotes ? `, support quotes ${report.supportResolved}/${report.supportQuotes}` : ''),
   ];
   if (!report.downgrades.length) lines.push('downgrades: none');
   else {
