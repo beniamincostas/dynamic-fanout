@@ -18,7 +18,7 @@ it never overrides the rails in `workflow.md`.
 1. **Work:** one unit per dimension × file cluster (packed). Each returns ≤8 findings
    `{title, severity, claim, evidence: ≤4 × {file, line, quote}}`; put the failure
    scenario in `claim`.
-2. **Dedup** (the one barrier): the foreman merges on `reduce.dedupKey` and keeps `mergedFrom`.
+2. **Dedup** (the one barrier): the foreman merges the same issue reported by different units (see dedupKey) and keeps `merged` + `mergedFrom`.
 3. **Verify:** per the declared rungs, deterministic first; skeptics see the claim and its
    evidence pointers, never the producer's narrative.
 4. **Sweep:** a fresh look for what the dimensions missed (standard 1 round, deep 2 + critic).
@@ -66,14 +66,20 @@ it never overrides the rails in `workflow.md`.
 
 ## dedupKey
 
-- Default `reduce.dedupKey: ['file', 'line']`: two dimensions often hit the same line
-  (line is bucketed to groups of 4, so near-miss line numbers still merge).
-- Supported keys are only `'file'`, `'line'` and `'title'` — an unknown key (e.g. `'symbol'`)
-  is silently ignored, so `['file', 'symbol']` keys on the file alone and merges every
-  finding in that file into one claim. When line numbers shift across units reading
-  different revisions, use `['file', 'title']` instead.
-- Add `'title'` only when one line legitimately carries two distinct defects; otherwise it
-  splits duplicates on wording.
+- Default `reduce.dedupKey: ['file', 'line']`. Two claims merge only when they are the
+  **same issue**: same file, first lines at most 3 apart, from **different** producers
+  (a unit never reports one issue twice, so its own neighbouring findings stay apart), and
+  either the exact same line or alike titles (≥50% shared title words). Until 0.1.4 a
+  4-line bucket alone decided, which folded distinct bugs on adjacent lines into one claim
+  and dropped the second one's text unverified.
+- Every merge keeps the absorbed claims as `merged: [{cid, unit, title}]` (plus
+  `mergedFrom`), and `report.mjs` prints them under the claim, so a wrong merge is visible.
+- Supported keys are `'file'`, `'line'` and `'title'`; an unknown key (e.g. `'symbol'`) is
+  ignored. When line numbers shift across units reading different revisions, use
+  `['file', 'title']`: without `'line'` the near-line test is skipped and the same-issue
+  test still applies.
+- The sweep uses the same test: a re-find of a known claim is dropped, a distinct issue
+  next to one is kept.
 - Dedup runs before verification so each merged claim is verified once, at the highest
   rung any of its sources asked for.
 

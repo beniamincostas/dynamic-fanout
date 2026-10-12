@@ -92,7 +92,12 @@ function formatClaim(c) {
   const sev = c.verifiedSeverity && c.verifiedSeverity !== c.severity ? `${c.severity}->${c.verifiedSeverity}` : c.severity || '?';
   const verdict = `${c.verdict || 'PENDING'}${c.rung ? `(${c.rung})` : ''}`;
   const loc = e.file ? `${e.file}:${e.line ?? '?'}` : '(no evidence)';
-  return `  ${c.cid || '?'}  ${sev}  ${verdict}  ${c.title || ''} — ${loc} — ${c.reason || ''}`.replace(/\s+—\s*$/, '');
+  const line = `  ${c.cid || '?'}  ${sev}  ${verdict}  ${c.title || ''} — ${loc} — ${c.reason || ''}`.replace(/\s+—\s*$/, '');
+  // Merged duplicates keep their own titles, so a wrong merge is visible here.
+  const merged = Array.isArray(c.merged) && c.merged.length
+    ? `\n      merged: ${c.merged.map((m) => `${m.cid || '?'} ${m.title || ''}`.trim()).join('; ')}`
+    : '';
+  return line + merged;
 }
 
 export function formatText(rep) {

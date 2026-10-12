@@ -46,6 +46,14 @@ of the result JSON, and evidence cited both absolute and repo-relative for one f
   findings, sweep claims, `counter_quote`, `support`), so one file cited absolute and
   repo-relative dedups to one claim.
 - `implement.js` passes a theme's `ctxTok` through to its pricing card.
+- **Dedup merges only the same issue.** A smoke review showed the 4-line bucket folding
+  distinct bugs on adjacent lines into one claim ("divides by zero" into "loses remainder
+  cents") and dropping the second one unverified. Two claims now merge only when they come
+  from different producers, sit at most 3 lines apart, and cite the exact same line or have
+  alike titles; the sweep's "already known" check uses the same test. Merged claims keep
+  their titles in `merged`, and `report.mjs` prints them.
+- **The whole-diff reviewer sees whole briefs** (whitespace collapsed, ≤1500 chars), not
+  just their first line: it had flagged items 2..n of a multi-item brief as scope creep.
 
 ### Added
 - `scripts/report.mjs`: one-call view of a run's output (header, per-unit rows, claims by
@@ -58,6 +66,15 @@ of the result JSON, and evidence cited both absolute and repo-relative for one f
   most 3 turns, read results only through `report.mjs`).
 - Tests: `agents.test.mjs` (tool rules, rung-copy identity), `claude-md-chain.test.mjs`,
   `report.test.mjs`, `docs.test.mjs` (docs state the defaults the code uses).
+
+### Validated
+- Built with the shipped implement workflow: 5 themes, all green on the first attempt, plus
+  one whole-diff review — $12.38 actual against a $20.18 estimate (0.1.3 price model).
+- End-to-end smoke review of this branch on a fixture whose subfolder holds a ~43k-token
+  CLAUDE.md: 0 of 7 agents had it attached (the Read tool was never used), contexts stayed
+  at 4–9k tokens, all 3 planted high-severity bugs came back CONFIRMED with the skeptic's
+  own support quote (3/3 resolved), the one correct boundary was not flagged, and the crew
+  cost $0.20. The same run exposed the dedup fold fixed above.
 
 ## dynamic-fanout 0.1.3 — 2026-10-11
 

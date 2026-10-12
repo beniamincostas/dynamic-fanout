@@ -130,3 +130,12 @@ test('CLI: an unreadable file warns and exits 0', () => {
   assert.equal(r.status, 0);
   assert.match(r.stdout, /warning: report failed/);
 });
+
+test('formatText: a merged claim lists the titles it absorbed, so a wrong merge is visible', () => {
+  const doc = { result: { results: { units: {}, claims: [
+    { cid: 'u1.f1', unit: 'u1', severity: 'high', title: 'split loses remainder cents', verdict: 'CONFIRMED', rung: 'V3',
+      evidence: [{ file: 'svc/b.py', line: 24, quote: 'q' }], merged: [{ cid: 'u2.f2', unit: 'u2', title: 'split drops the remainder' }] },
+  ] } } }
+  const text = rpt.formatText(rpt.build(doc))
+  assert.match(text, /merged: u2\.f2 split drops the remainder/)
+})
