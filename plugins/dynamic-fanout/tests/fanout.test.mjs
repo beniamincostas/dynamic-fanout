@@ -534,6 +534,26 @@ test('foreman: an unsupported CONFIRMED lands PLAUSIBLE; support is carried to r
   assert.equal(res.digest.counts.confirmed, 1)
 })
 
+test('evidence is canonicalized onto scope at claim intake: absolute vs relative-suffix cites of the same scope file dedup to one claim', async () => {
+  const a = baseArgs({
+    units: [
+      { id: 'u1', role: 'review', vec: 'D1 A0 T1 C0 V1 B1 G0', scope: { files: ['src/a.py'] }, in: 20000, ctx: 'omit',
+        p: { model: 'sonnet', effort: 'medium' }, fb: { effort: 'high' }, check: 'quote', why: 'test', brief: 'review a.py (1)' },
+      { id: 'u2', role: 'review', vec: 'D1 A0 T1 C0 V1 B1 G0', scope: { files: ['src/a.py'] }, in: 20000, ctx: 'omit',
+        p: { model: 'sonnet', effort: 'medium' }, fb: { effort: 'high' }, check: 'quote', why: 'test', brief: 'review a.py (2)' },
+    ],
+  })
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 10, 'high', 'dup')] }),
+    'u2:1': okUnit({ files_read: ['/repo/project/src/a.py'], findings: [finding('/repo/project/src/a.py', 10, 'high', 'dup')] }),
+  })
+  const { res } = await runFanout(a, base)
+  const dups = res.results.claims.filter(c => c.title === 'dup')
+  assert.equal(dups.length, 1, 'absolute and relative-suffix cites of the same scope file must dedup')
+  assert.deepEqual(dups[0].evidence.map(e => e.file), ['src/a.py'])
+  assert.ok(dups[0].mergedFrom && dups[0].mergedFrom.length === 1)
+})
+
 test('dedup merges claims on the same file and line bucket, keeping the higher severity', () => {
   const claims = [
     { cid: 'a', title: 'x', severity: 'medium', evidence: [{ file: './src/a.py', line: 10, quote: 'q' }], producer: { model: 'sonnet' } },
