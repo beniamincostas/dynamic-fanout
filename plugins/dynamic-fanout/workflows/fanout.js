@@ -832,7 +832,7 @@ const NUMBER_RULES = [
 ].join('\n')
 
 const INSPECT_RULES = [
-  'You check quotes, nothing else. For each item, open the file (paths are relative to the current working directory) and decide whether the quote appears verbatim, ignoring whitespace differences, within 3 lines of the given line.',
+  'You check quotes, nothing else. For each item, print the cited lines with Bash (`nl -ba FILE | sed -n \'A,Bp\'`; paths are relative to the current working directory) and decide whether the quote appears verbatim, ignoring whitespace differences, within 3 lines of the given line.',
   'If the quote appears elsewhere in the file, set found=false and give actual_line. If the file cannot be read, set found=false and list it in unreadable.',
   'Do not judge whether any claim is correct. Return one check per item, keyed by its ref.',
 ].join('\n')
@@ -843,7 +843,7 @@ const SKEPTIC_RULES = [
   '- REFUTED: you found concrete counter-evidence; give counter_quote {file, line, quote}. No counter-evidence means not refuted.',
   '- PLAUSIBLE: it could be true but you could not fully confirm it.',
   '- UNVERIFIABLE: it cannot be checked with the access you have.',
-  'You see only the claim and its evidence pointers, not the producer\'s reasoning. Read the files yourself. Keep each reason under 300 characters. Correct the severity if it is wrong. Read-only: never edit anything.',
+  'You see only the claim and its evidence pointers, not the producer\'s reasoning. Check the files yourself with Bash (`grep -n`, `nl -ba FILE | sed -n \'A,Bp\'`). Keep each reason under 300 characters. Correct the severity if it is wrong. Read-only: never edit anything.',
 ].join('\n')
 
 function trimJson(x, max) {
@@ -975,7 +975,7 @@ async function callOnce(prompt, cell, o) {
   return call(prompt, cell, typeOk.has(o.agentType) ? o : { ...o, agentType: undefined })
 }
 
-// worker carries only Read/Grep/Glob/Bash (no MCP schemas in its prefix); a T2 unit
+// worker carries only Grep/Glob/Bash (no MCP schemas in its prefix; no Read, which attaches nested CLAUDE.md); a T2 unit
 // (MCP or long tool loops) gets worker-mcp; ctx keep gets worker-ctx (all tools + CLAUDE.md).
 const unitAgentType = u => AT[typeKey(u)] || AT.worker
 
@@ -984,8 +984,8 @@ function unitPrompt(u, attempt, mode) {
   if (u.scope.files.length) lines.push('Scope: read these and list every file you actually read in files_read:', ...u.scope.files.map(f => `- ${f}`), '')
   lines.push(RULES)
   const cap = u.o && u.o.cap
-  lines.push(`- Budget: about ${u.turns || 20} tool calls${cap ? ` (hard stop at ${cap})` : ''}. Find before you read: grep or glob first, then Read only the line ranges you need (offset/limit), not whole files; leave Scope only to resolve a reference. Keep your last 2 calls for the answer; if the budget runs out, return status "partial" with remaining[] instead of continuing.`)
-  if (Number(u.in) > 0) lines.push(`- Reading budget: about ${Math.round(u.in / 12)} lines in total (~${u.in} tokens); each Read at most ~250 lines.`)
+  lines.push(`- Budget: about ${u.turns || 20} tool calls${cap ? ` (hard stop at ${cap})` : ''}. Find before you read: grep first, then print only the line ranges you need with Bash (\`nl -ba FILE | sed -n 'A,Bp'\`), not whole files; leave Scope only to resolve a reference. Keep your last 2 calls for the answer; if the budget runs out, return status "partial" with remaining[] instead of continuing.`)
+  if (Number(u.in) > 0) lines.push(`- Reading budget: about ${Math.round(u.in / 12)} lines in total (~${u.in} tokens); each range at most ~250 lines.`)
   lines.push('- Cite every file path exactly as it is written under Scope.')
   if (u.n) lines.push('', NUMBER_RULES)
   if (mode) lines.push('', mode)

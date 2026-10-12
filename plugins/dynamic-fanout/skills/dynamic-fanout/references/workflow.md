@@ -118,7 +118,7 @@ skeptics (`dynamic-fanout:skeptic`) follow the same `worker`/`worker-mcp` split 
 own tool needs, via the same vector check.
 
 `worker`, `worker-low/medium/high` and `skeptic`/`skeptic-high` declare an explicit
-`tools: Read, Grep, Glob, Bash` allowlist — no MCP tool definitions reach their system
+`tools: Grep, Glob, Bash` allowlist (no `Read`: it attaches every CLAUDE.md on a file's path, so lean agents read line ranges through Bash) — no MCP tool definitions reach their system
 prompt, which is the cheap end of the measured `baseCtx` range (see `economics.md`
 Stage-0 calibration). `worker-mcp` and `worker-ctx`/`worker-ctx-xhigh` instead inherit
 every tool minus `Edit, Write, NotebookEdit, Agent`, so an MCP-heavy or long-tool-loop
@@ -283,11 +283,11 @@ budget lines, for a unit with planned turns N on an agent with cap CAP and plann
 reading `in` tokens:
 
 ```
-- Budget: about N tool calls (hard stop at CAP). Find before you read: grep or glob first,
-  then Read only the line ranges you need (offset/limit), not whole files; leave Scope only
+- Budget: about N tool calls (hard stop at CAP). Find before you read: grep first, then print
+  only the line ranges you need with Bash (`nl -ba FILE | sed -n 'A,Bp'`), not whole files; leave Scope only
   to resolve a reference. Keep your last 2 calls for the answer; if the budget runs out,
   return status "partial" with remaining[] instead of continuing.
-- Reading budget: about <in/12> lines in total (~<in> tokens); each Read at most ~250 lines.
+- Reading budget: about <in/12> lines in total (~<in> tokens); each range at most ~250 lines.
 - Cite every file path exactly as it is written under Scope.
 ```
 
