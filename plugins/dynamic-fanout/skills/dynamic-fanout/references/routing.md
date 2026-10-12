@@ -58,7 +58,7 @@ Note the direction of V: **V2 is the easy end** (deterministic check), V0 the ha
 **T also picks the agent type, not just the model floor.** T2 (MCP or long tool loops)
 routes the unit to `dynamic-fanout:worker-mcp` instead of the plain `worker`; everything
 else (T0/T1, and `ctx:'omit'` work generally) runs on `worker`/`skeptic`, which carry an
-explicit `tools: Read, Grep, Glob, Bash` allowlist. The allowlist is a cost lever, not
+explicit `tools: Grep, Glob, Bash` allowlist (no `Read`: it attaches every CLAUDE.md on a file's path, so lean agents read line ranges through Bash). The allowlist is a cost lever, not
 just a safety one: an agent file with a fixed tool list has no MCP tool-schema JSON in
 its system prompt. Measured on 119 agents, allowlisted agents start at ~6–8k tokens
 (`baseCtxLean` 8000), full-tool agents at ~15k (`baseCtx` 15000) before any CLAUDE.md.

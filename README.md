@@ -108,7 +108,8 @@ The savings are ranked by size, because fixed context per agent dominates cost:
    prompt, and reads targeted line ranges instead of whole files.
 3. **No CLAUDE.md** by default, parity units included. A short rules capsule with
    `path:line` pointers replaces it — and no MCP tool schemas either, unless the unit
-   needs them: `worker`/`skeptic` carry a plain `Read, Grep, Glob, Bash` allowlist
+   needs them: `worker`/`skeptic` carry a plain `Grep, Glob, Bash` allowlist
+   (no `Read`: it attaches every CLAUDE.md on a file's path; they read through Bash)
    (~8k-token prefix), and only units whose vector needs MCP or a long tool loop run on
    `worker-mcp`, which keeps the full tool set.
 4. **Effort matched to difficulty**, and mechanical work peeled into Sonnet units.

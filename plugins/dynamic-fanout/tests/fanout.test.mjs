@@ -626,7 +626,8 @@ test('every unit prompt carries a turn + reading budget and the scope-path rule'
   const { calls } = await runFanout(baseArgs(), responder())
   const p = calls.find(c => tagOf(c.prompt) === 'u1:1').prompt
   assert.match(p, /Budget: about \d+ tool calls \(hard stop at 30\)/)
-  assert.match(p, /Read only the line ranges you need/)
+  assert.match(p, /nl -ba FILE \| sed -n/)
+  assert.doesNotMatch(p, /Read only|offset\/limit/)
   assert.match(p, /Cite every file path exactly as it is written under Scope/)
 })
 
@@ -772,8 +773,21 @@ test('price: expected verifier batches follow the expected findings', () => {
 test('every unit prompt carries a numeric reading budget', async () => {
   const { calls } = await runFanout(baseArgs(), responder())
   const p = calls.find(c => tagOf(c.prompt) === 'u1:1').prompt
-  assert.match(p, /- Reading budget: about 2500 lines in total \(~30000 tokens\); each Read at most ~250 lines\./)
+  assert.match(p, /- Reading budget: about 2500 lines in total \(~30000 tokens\); each range at most ~250 lines\./)
   const lines = p.split('\n')
   const i = lines.findIndex(l => l.startsWith('- Budget:'))
   assert.match(lines[i + 1], /^- Reading budget:/, 'right after the Budget line')
+})
+
+test('inspector and skeptic prompts read through Bash, not the Read tool', async () => {
+  const f = { ...finding('src/a.py', 3), severity: 'high' }
+  const { calls } = await runFanout(baseArgs(), responder({ 'u1:1': okUnit({ files_read: ['src/a.py'], findings: [f] }) }))
+  const insp = calls.find(c => tagOf(c.prompt) === 'i:u1:1')
+  assert.ok(insp, 'an inspector ran')
+  assert.match(insp.prompt, /print the cited lines with Bash \(`nl -ba FILE \| sed -n/)
+  assert.doesNotMatch(insp.prompt, /open the file/)
+  const sk = calls.find(c => /independent skeptic/.test(c.prompt))
+  assert.ok(sk, 'a skeptic ran')
+  assert.match(sk.prompt, /Check the files yourself with Bash \(`grep -n`, `nl -ba FILE \| sed -n/)
+  assert.doesNotMatch(sk.prompt, /Read the files yourself/)
 })
