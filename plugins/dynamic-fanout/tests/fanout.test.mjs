@@ -584,17 +584,54 @@ test('verdict support and counter_quote paths are canonicalized onto scope', asy
   assert.equal(by('h2').counter_quote.file, 'src/a.py')
 })
 
-test('dedup merges claims on the same file and line bucket, keeping the higher severity', () => {
+test('dedup merges one issue reported by two units near one line, keeping the higher severity and the merged title', () => {
   const claims = [
-    { cid: 'a', title: 'x', severity: 'medium', evidence: [{ file: './src/a.py', line: 10, quote: 'q' }], producer: { model: 'sonnet' } },
-    { cid: 'b', title: 'y', severity: 'high', evidence: [{ file: 'src/a.py', line: 11, quote: 'q2' }], producer: { model: 'opus' } },
-    { cid: 'c', title: 'z', severity: 'low', evidence: [{ file: 'src/a.py', line: 40, quote: 'q3' }] },
+    { cid: 'a', unit: 'u1', title: 'total skips the last item', severity: 'medium', evidence: [{ file: './src/a.py', line: 10, quote: 'q' }], producer: { model: 'sonnet' } },
+    { cid: 'b', unit: 'u2', title: 'Off-by-one: total() skips the last item', severity: 'high', evidence: [{ file: 'src/a.py', line: 11, quote: 'q2' }], producer: { model: 'opus' } },
+    { cid: 'c', unit: 'u3', title: 'unrelated', severity: 'low', evidence: [{ file: 'src/a.py', line: 40, quote: 'q3' }] },
   ]
   const out = core.dedupClaims(claims, ['file', 'line'])
   assert.equal(out.length, 2)
   assert.equal(out[0].severity, 'high')
   assert.deepEqual(out[0].mergedFrom, ['b'])
+  assert.deepEqual(out[0].merged.map(m => m.title), ['Off-by-one: total() skips the last item'])
   assert.equal(out[0].producer.model, 'opus')
+})
+
+test('dedup keeps distinct issues apart: one unit never reports one issue twice, and unlike titles on nearby lines are different bugs', () => {
+  // The smoke-review case: one unit, two real bugs on adjacent lines of split().
+  const sameUnit = core.dedupClaims([
+    { cid: 'u2.f1', unit: 'u2', title: 'split loses remainder cents', severity: 'high', evidence: [{ file: 'svc/billing.py', line: 24, quote: 'q' }] },
+    { cid: 'u2.f2', unit: 'u2', title: 'split divides by zero when parts is 0', severity: 'medium', evidence: [{ file: 'svc/billing.py', line: 23, quote: 'q' }] },
+  ], ['file', 'line'])
+  assert.equal(sameUnit.length, 2, 'adjacent findings of one unit stay two claims')
+  const crossUnit = core.dedupClaims([
+    { cid: 'a', unit: 'u1', title: 'parse_amount treats single-digit cents as hundredths', severity: 'high', evidence: [{ file: 'b.py', line: 31, quote: 'q' }] },
+    { cid: 'b', unit: 'u2', title: 'parse_amount mishandles 3+ decimal digits and negatives', severity: 'medium', evidence: [{ file: 'b.py', line: 30, quote: 'q' }] },
+  ], ['file', 'line'])
+  assert.equal(crossUnit.length, 2, 'unlike titles two lines apart are different issues')
+  const sameLine = core.dedupClaims([
+    { cid: 'a', unit: 'u1', title: 'race on save', severity: 'high', evidence: [{ file: 'b.py', line: 31, quote: 'q' }] },
+    { cid: 'b', unit: 'u2', title: 'state written before delivery', severity: 'medium', evidence: [{ file: 'b.py', line: 31, quote: 'q' }] },
+  ], ['file', 'line'])
+  assert.equal(sameLine.length, 1, 'two units on the exact same line merge')
+  assert.deepEqual(sameLine[0].merged.map(m => m.cid), ['b'])
+  const acrossBuckets = core.dedupClaims([
+    { cid: 'a', unit: 'u1', title: 'fee boundary excludes the limit', severity: 'medium', evidence: [{ file: 'b.py', line: 9, quote: 'q' }] },
+    { cid: 'b', unit: 'u2', title: 'fee boundary at the limit is wrong', severity: 'medium', evidence: [{ file: 'b.py', line: 10, quote: 'q' }] },
+  ], ['file', 'line'])
+  assert.equal(acrossBuckets.length, 1, 'alike titles one line apart merge even across the old 4-line bucket edge')
+})
+
+test('sweep keeps a distinct issue next to a known claim and drops a re-find of it', async () => {
+  const a = baseArgs({ sweep: { rounds: 1 } })
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 10, 'high', 'total skips the last item')] }),
+    's:1:1': okUnit({ findings: [finding('src/a.py', 11, 'medium', 'total divides by zero on empty input'), finding('src/a.py', 12, 'high', 'total() skips the last item (off by one)')] }),
+  })
+  const { res } = await runFanout(a, base)
+  const sweep = res.results.claims.filter(c => c.unit === 'sweep').map(c => c.title)
+  assert.deepEqual(sweep, ['total divides by zero on empty input'])
 })
 
 // ───────────────────────── ownership (property test) ─────────────────────────

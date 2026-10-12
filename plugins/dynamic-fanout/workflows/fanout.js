@@ -657,15 +657,51 @@ function claimKey(c, keys) {
   return parts.length ? parts.join('|') : null
 }
 
-function dedupClaims(claims, keys) {
+// Two claims near one location are the same issue only when they come from different
+// producers and either cite the exact same line or are named alike. A unit never reports
+// one issue twice, so its own neighbouring findings stay apart. (Until 0.1.4 a 4-line
+// bucket alone decided: a smoke review folded "split divides by zero" into "split loses
+// remainder cents" and dropped the second bug's text unverified.)
+const NEAR_LINES = 3
+const STOP_WORDS = new Set(['and', 'the', 'for', 'with', 'not', 'are', 'was', 'when', 'from', 'into', 'that', 'this', 'its', 'can', 'but'])
+const titleWords = t => new Set(normTitle(t).split(' ').filter(w => w.length >= 3 && !STOP_WORDS.has(w)))
+function titleOverlap(a, b) {
+  const x = titleWords(a), y = titleWords(b)
+  if (!x.size || !y.size) return 0
+  let n = 0
+  for (const w of x) if (y.has(w)) n++
+  return n / Math.min(x.size, y.size)
+}
+const firstLineOf = c => { const e = (c.evidence || [])[0]; return e && Number.isFinite(Number(e.line)) ? Number(e.line) : null }
+
+function sameIssue(g, c) {
+  const units = new Set([g.unit, ...(g.merged || []).map(m => m.unit)].filter(Boolean))
+  if (c.unit && units.has(c.unit)) return false
+  const la = firstLineOf(g), lb = firstLineOf(c)
+  if (la !== null && la === lb) return true
+  return titleOverlap(g.title, c.title) >= 0.5
+}
+
+// The first claim in `list` that `c` duplicates: same file (and title key, when asked for),
+// first lines at most NEAR_LINES apart when lines count, and sameIssue().
+function findSame(list, c, keys) {
   const k = Array.isArray(keys) && keys.length ? keys : ['file', 'line']
-  const groups = new Map()
+  const base = k.filter(x => x !== 'line')
+  const key = claimKey(c, base.length ? base : ['file'])
+  if (key === null || claimKey(c, k) === null) return null
+  const lc = firstLineOf(c)
+  return list.find(g => claimKey(g, base.length ? base : ['file']) === key
+    && (!k.includes('line') || (firstLineOf(g) !== null && Math.abs(firstLineOf(g) - lc) <= NEAR_LINES))
+    && sameIssue(g, c)) || null
+}
+
+function dedupClaims(claims, keys) {
   const out = []
   for (const c of claims) {
-    const key = claimKey(c, k)
-    if (key === null) { out.push(c); continue }
-    const g = groups.get(key)
-    if (!g) { groups.set(key, c); out.push(c); continue }
+    const g = findSame(out, c, keys)
+    if (!g) { out.push(c); continue }
+    // Keep every merged claim's own title, so a wrong merge stays visible in the report.
+    g.merged = (g.merged || []).concat({ cid: c.cid, unit: c.unit || null, title: c.title })
     if (sevRank(c.severity) > sevRank(g.severity)) { g.severity = c.severity; g.title = c.title; g.claim = c.claim }
     for (const e of c.evidence || []) if (!g.evidence.some(x => normPath(x.file) === normPath(e.file) && Number(x.line) === Number(e.line))) g.evidence.push(e)
     g.mergedFrom = (g.mergedFrom || []).concat(c.cid)
@@ -1204,7 +1240,6 @@ async function sweep() {
   const found = []
   if (!V.rounds) return found
   const scopeFiles = [...new Set(V.units.flatMap(u => u.scope.files))]
-  const seenKeys = new Set(claims.map(c => claimKey(c, ['file', 'line'])).filter(Boolean))
   for (let r = 1; r <= V.rounds; r++) {
     const est = estUsd(V.sweepCell, inAvg * K.sweepInFrac, 0, K, agentOpts('worker', K, 'sweep'))
     const why = blocked(est, 'work')
@@ -1229,9 +1264,9 @@ async function sweep() {
         claim: f.claim, evidence: scopeEvidence(f.evidence, scopeFiles), parity: false, producer: V.sweepCell, bump: 0,
         blast: Math.max(0, ...V.units.map(u => (u.v ? u.v.B : 0))), verdict: null, reason: null,
       }
-      const k = claimKey(c, ['file', 'line'])
-      if (k && seenKeys.has(k)) return
-      if (k) seenKeys.add(k)
+      // A re-find of a known claim (or of an earlier sweep finding) is dropped; a distinct
+      // issue next to one is kept (see sameIssue).
+      if (findSame([...claims, ...found, ...fresh], c, ['file', 'line'])) return
       fresh.push(c)
     })
     ledger.sweeps.push({ tag, cell: cellKey(V.sweepCell), round: r, newClaims: fresh.length, estUsd: est })
@@ -1403,7 +1438,7 @@ return {
       cid: c.cid, unit: c.unit, severity: c.severity, verifiedSeverity: c.verifiedSeverity || null, title: c.title, claim: c.claim,
       evidence: c.evidence, rung: c.rung || null, verdict: c.verdict, verdictBy: c.verdictBy || null, reason: c.reason || null,
       counter_quote: c.counter_quote || null, support: c.support || null, support_cmd: c.support_cmd || null, parity: !!c.parity, producer: c.producer || null, bump: c.bump || 0,
-      blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, mergedFrom: c.mergedFrom || null,
+      blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, mergedFrom: c.mergedFrom || null, merged: c.merged || null,
     })),
   },
 }
