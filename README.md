@@ -23,6 +23,28 @@ A deterministic foreman workflow enforces the cards:
 
 Code never picks a model or an effort.
 
+### 0.1.4: no nested CLAUDE.md for the lean crew
+
+`omitClaudeMd` only drops the CLAUDE.md files loaded at agent start. The Read tool attaches
+every CLAUDE.md between the session cwd and the file it reads. On a measured 23-agent
+research run a ~350 KB nested CLAUDE.md pushed 15 lean agents from ~8k to ~150k tokens
+of context, about 2/3 of the crew's cost. 0.1.4:
+- the lean crew (`worker*`, `skeptic*`, `inspector`, `reviewer`) reads through Bash
+  (`grep -n`, `nl -ba FILE | sed -n 'A,Bp'`), which attaches nothing; `worker-mcp`
+  disallows Read; `worker-ctx*` and `implementer*` keep it and are priced with their own
+  CLAUDE.md chain, measured by `scripts/claude-md-chain.mjs`;
+- **price model 3** is refitted without the leak (`readFactor` 4 → 1, the gap sweep
+  priced as its own cheap role) and calibration is keyed by price model, so an old
+  global scale is no longer counted twice;
+- `medium` findings get a skeptic again (V2), and a CONFIRMED needs the skeptic's own
+  support quote (or the empty search for an absence claim);
+- `scripts/report.mjs` prints a run's units and claims in one call; evidence paths are
+  canonicalized, so the same file cited absolute and relative dedups.
+
+**Requirement:** the lean crew needs read-only Bash in subagents — auto mode, or allow
+rules for `nl`, `sed -n` and `grep`. If Bash is refused, those agents return `blocked`
+(`no_access`) and the master re-runs the units with `ctx:'keep'`.
+
 ### 0.1.3: implement as its own workflow
 
 The master used to hand-write the implement loop as an inline Workflow script from the
