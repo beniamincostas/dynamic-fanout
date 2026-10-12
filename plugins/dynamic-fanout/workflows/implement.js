@@ -77,6 +77,7 @@ function priceArgs(a) {
     ultra: { agents: a.themes.length, verifiers: 1, ctxTok: 0, inAvg: ins.length ? Math.round(ins.reduce((x, y) => x + y, 0) / ins.length) : 30000, basis: 'implement: one agent per theme' },
     units: a.themes.map(t => ({
       id: t.id, role: 'implement', vec: t.vec, why: t.why, brief: t.brief, ...(Number(t.in) > 0 ? { in: Number(t.in) } : {}),
+      ...(Number(t.ctxTok) > 0 ? { ctxTok: Number(t.ctxTok) } : {}),
       ctx: 'keep', p: t.p, fb: t.fb || null, check: 'tests',
     })),
     caps: { ceilingUsd: a.caps.ceilingUsd },

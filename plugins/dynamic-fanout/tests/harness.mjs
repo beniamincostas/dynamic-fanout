@@ -13,7 +13,7 @@ const CORE_END = BODY.indexOf('// @core-end')
 if (CORE_END < 0) throw new Error('fanout.js has no // @core-end marker')
 
 const CORE_NAMES = [
-  'meta', 'MODELS', 'EFFORTS', 'DEFAULT_CALIB', 'UNIT_RESULT', 'calibrate', 'parseVec', 'isParity', 'cellOf', 'cellKey',
+  'meta', 'MODELS', 'EFFORTS', 'DEFAULT_CALIB', 'PRICE_MODEL', 'UNIT_RESULT', 'calibrate', 'parseVec', 'isParity', 'cellOf', 'cellKey',
   'stronger', 'checksOf', 'estUsd', 'outTok', 'validate', 'price', 'moneyRails', 'buildCard', 'classify', 'toCents',
   'centsStr', 'compareNumbers', 'evalInvariants', 'dedupClaims', 'rungFor', 'mergeVerdicts', 'normalizeVerdict',
   'mergeResults', 'mergeInspections', 'modeText', 'missingFiles', 'pathMatch', 'floorOf', 'turnsFor', 'typeKey', 'agentOpts', 'toScope',
