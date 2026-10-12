@@ -466,36 +466,26 @@ describe('stats', () => {
       assert.equal(s.calib, undefined);
     });
 
-    test('CLI: update --ledger folds the ledger-cost totals into calib.scale', () => {
+    test('CLI: a card without a price model feeds no calibration, and the update line says why', () => {
       const dir = tmpDir();
       const statsFile = path.join(dir, 'stats.json');
       const ledgerFile = path.join(dir, 'ledger.json');
-      // fixture run estimates 4.2 + 0.5 = 4.7; actual below says the real spend was 9.4 -> ratio 2
       fs.writeFileSync(ledgerFile, JSON.stringify({ totals: { usd: 9.4 } }));
       const r = run('stats.mjs', ['update', OUTPUT, '--file', statsFile, '--ledger', ledgerFile]);
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /calib\.scale=2\.00/);
+      assert.match(r.stdout, /calib skipped \(card has no price model/);
       const s = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
-      assert.deepEqual(s.calib, { n: 1, scale: 2, last: { ratio: 2, at: 1 } });
+      assert.equal(s.calib, undefined);
+      assert.equal(s.runs.length, 1, 'the run itself is still recorded');
     });
 
-    test('CLI: --summary prints a CALIB line and an instruction line once calib.scale exists, not before', () => {
+    test('CLI: --summary never prints a legacy global scale', () => {
       const dir = tmpDir();
       const statsFile = path.join(dir, 'stats.json');
-      const before = run('stats.mjs', ['update', OUTPUT, '--file', statsFile]);
-      assert.equal(before.status, 0, before.stderr);
-      const sumBefore = run('stats.mjs', ['--summary', 'review', '--file', statsFile]);
-      assert.ok(!/CALIB/.test(sumBefore.stdout));
-
-      const ledgerFile = path.join(dir, 'ledger.json');
-      fs.writeFileSync(ledgerFile, JSON.stringify({ totals: { usd: 2.35 } })); // ratio 0.5
-      const dir2 = tmpDir();
-      const statsFile2 = path.join(dir2, 'stats.json');
-      run('stats.mjs', ['update', OUTPUT, '--file', statsFile2, '--ledger', ledgerFile]);
-      const sumAfter = run('stats.mjs', ['--summary', 'review', '--file', statsFile2]);
-      assert.equal(sumAfter.status, 0, sumAfter.stderr);
-      assert.match(sumAfter.stdout, /CALIB \{"scale":0\.50\}/);
-      assert.match(sumAfter.stdout, /pass this scale back to the foreman as args\.calib/);
+      fs.writeFileSync(statsFile, JSON.stringify({ ...st.emptyStats(), calib: { n: 1, scale: 1.28, last: { ratio: 1.28, at: 1 } } }));
+      const sum = run('stats.mjs', ['--summary', 'review', '--file', statsFile]);
+      assert.equal(sum.status, 0, sum.stderr);
+      assert.doesNotMatch(sum.stdout, /CALIB/);
     });
 
     test('CLI: --ledger with a non-existent file errors out (status 2) instead of recording the run', () => {
@@ -506,127 +496,166 @@ describe('stats', () => {
     });
   });
 
-  // ---------------- self-calibration, per-role (calib.scaleByRole) ----------------
+  // ---------------- self-calibration, per-role (calib.scaleByRole), keyed by price model ----------------
   describe('self-calibration: per-role', () => {
     const CALIB_OUTPUT = path.join(FIX, 'workflow-output-calib.json');
     const loadCalibResult = () => st.unwrap(JSON.parse(fs.readFileSync(CALIB_OUTPUT, 'utf8')));
-    // estimate: work = 1.0 + 1.0 (attempts) + 0.5 (sweep) = 2.5; verify = 1.0 + 0.5 = 1.5; inspect = 0.3
-    // card.calib.scaleByRole = { work: 1.2, verify: 0.8 } (inspect absent -> fallback 1)
+    // estimate: work = 1.0 + 1.0 (attempts) = 2.0; sweep = 0.5; verify = 1.0 + 0.5 = 1.5; inspect = 0.3
+    // card.calib = { pm: 3, scale: 1, scaleByRole: { work: 1.2, verify: 0.8 } } (inspect/sweep absent -> 1)
+    const LEDGER = { byKind: { work: { usd: 2.4 }, critic: { usd: 0.6 }, verifier: { usd: 1.0 } } }; // work actual 3.0
 
-    test('estimatedUsdByRole sums unit attempts + sweeps (work), verifiers (verify), inspectors (inspect)', () => {
-      assert.deepEqual(st.estimatedUsdByRole(loadCalibResult()), { work: 2.5, verify: 1.5, inspect: 0.3 });
-      assert.deepEqual(st.estimatedUsdByRole({}), { work: 0, verify: 0, inspect: 0 });
+    test('PRICE_MODEL matches the foreman\'s', () => {
+      const src = fs.readFileSync(path.join(HERE, '..', 'workflows', 'fanout.js'), 'utf8');
+      assert.equal(Number(/^const PRICE_MODEL = (\d+)/m.exec(src)[1]), st.PRICE_MODEL);
+      assert.equal(st.PRICE_MODEL, 3);
+      assert.deepEqual(st.ROLES, ['work', 'verify', 'inspect', 'sweep']);
     });
 
-    test('actualUsdByRole reads byKind.{work+sweep+critic, verifier, inspector}; a missing kind is null, not 0', () => {
+    test('estimatedUsdByRole: work = unit attempts, sweep = sweep rounds, verify, inspect', () => {
+      assert.deepEqual(st.estimatedUsdByRole(loadCalibResult()), { work: 2.0, verify: 1.5, inspect: 0.3, sweep: 0.5 });
+      assert.deepEqual(st.estimatedUsdByRole({}), { work: 0, verify: 0, inspect: 0, sweep: 0 });
+    });
+
+    test('actualUsdByRole reads byKind.{work+critic, sweep, verifier, inspector}; a missing kind is null, not 0', () => {
       assert.deepEqual(
-        st.actualUsdByRole({ byKind: { work: { usd: 3 }, sweep: { usd: 0.4 }, verifier: { usd: 1 } } }),
-        { work: 3.4, verify: 1, inspect: null },
+        st.actualUsdByRole({ byKind: { work: { usd: 3 }, critic: { usd: 0.2 }, sweep: { usd: 0.4 }, verifier: { usd: 1 } } }),
+        { work: 3.2, verify: 1, inspect: null, sweep: 0.4 },
       );
-      // no byKind at all (old-style ledger-cost shape) -> every role null
-      assert.deepEqual(st.actualUsdByRole({ totals: { usd: 9.4 } }), { work: null, verify: null, inspect: null });
-      // byKind present but a kind's usd is genuinely 0 -> still counted (0 is not "missing")
-      assert.deepEqual(st.actualUsdByRole({ byKind: { inspector: { usd: 0 } } }), { work: null, verify: null, inspect: 0 });
+      assert.deepEqual(st.actualUsdByRole({ totals: { usd: 9.4 } }), { work: null, verify: null, inspect: null, sweep: null });
+      assert.deepEqual(st.actualUsdByRole({ byKind: { inspector: { usd: 0 } } }), { work: null, verify: null, inspect: 0, sweep: null });
     });
 
-    test('applyCalibrationByRole: ratio_role = actual/estimate, multiplied by the factor the run actually used', () => {
+    test('applyCalibrationByRole: target = used x ratio; the first observation under a pm blends from used', () => {
+      const s = st.emptyStats();
+      // work: ratio 3.0/2.0 = 1.5, used 1.2 -> target 1.8 -> first obs 0.5*1.8 + 0.5*1.2 = 1.5
+      // verify: ratio 1.0/1.5, used 0.8 -> target 0.5333 -> 0.5*0.5333 + 0.5*0.8 = 0.6667
+      st.applyCalibrationByRole(s, { result: loadCalibResult(), ledgerJson: LEDGER });
+      assert.equal(s.calib.pm, 3);
+      near(s.calib.scaleByRole.work, 1.5);
+      near(s.calib.scaleByRole.verify, 2 / 3);
+      assert.ok(!('inspect' in s.calib.scaleByRole));
+      assert.ok(!('sweep' in s.calib.scaleByRole));
+      assert.deepEqual(s.calib.nByRole, { work: 1, verify: 1 });
+      near(s.calib.lastByRole.work.target, 1.8);
+      assert.equal(s.calib.lastByRole.work.used, 1.2);
+      assert.ok(!('scale' in s.calib), 'no global scale under a price model');
+    });
+
+    test('applyCalibrationByRole: used folds in the card\'s global scale (no double count)', () => {
       const s = st.emptyStats();
       const result = loadCalibResult();
-      // work: ratio 3.0/2.5 = 1.2, used 1.2 (from card.calib.scaleByRole.work) -> target 1.44
-      // verify: ratio 1.0/1.5 = 0.6667, used 0.8 -> target 0.5333
-      // inspect: byKind has no inspector entry -> skipped (actual missing)
-      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 3.0 }, verifier: { usd: 1.0 } } } });
-      assert.equal(s.calib.scaleByRole.work, 1.44);
-      near(s.calib.scaleByRole.verify, 0.5333333333333333);
-      assert.ok(!('inspect' in s.calib.scaleByRole));
-      assert.deepEqual(s.calib.nByRole, { work: 1, verify: 1 });
-      assert.deepEqual(s.calib.lastByRole.work, { ratio: 1.2, used: 1.2, target: 1.44, at: 1 });
-      near(s.calib.lastByRole.verify.ratio, 2 / 3);
+      result.card.calib.scale = 1.28;
+      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { verifier: { usd: 1.5 } } } }); // ratio 1
+      near(s.calib.lastByRole.verify.used, 0.8 * 1.28);
+      near(s.calib.scaleByRole.verify, 0.8 * 1.28);
+    });
+
+    test('applyCalibrationByRole: sweep is its own role', () => {
+      const s = st.emptyStats();
+      // sweep: ratio 0.25/0.5 = 0.5, used 1 (absent on the card) -> target 0.5 -> 0.75
+      st.applyCalibrationByRole(s, { result: loadCalibResult(), ledgerJson: { byKind: { sweep: { usd: 0.25 } } } });
+      near(s.calib.scaleByRole.sweep, 0.75);
+      assert.ok(!('work' in s.calib.scaleByRole), 'the sweep no longer feeds work');
+    });
+
+    test('applyCalibrationByRole: a card without pm feeds no calibration', () => {
+      const s = st.emptyStats();
+      const result = loadCalibResult();
+      delete result.card.calib.pm;
+      st.applyCalibrationByRole(s, { result, ledgerJson: LEDGER });
+      assert.equal(s.calib, undefined);
     });
 
     test('applyCalibrationByRole: a role whose estimate is <= 0 is skipped', () => {
       const s = st.emptyStats();
-      const result = { ledger: { units: [], verifiers: [], inspectors: [], sweeps: [] } }; // every role estimates to 0
+      const result = { card: { calib: { pm: 3 } }, ledger: { units: [], verifiers: [], inspectors: [], sweeps: [] } };
       st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 5 }, verifier: { usd: 2 }, inspector: { usd: 1 } } } });
-      assert.equal(s.calib, undefined); // nothing comparable -> no calib object created at all
+      assert.equal(s.calib, undefined);
     });
 
-    test('applyCalibrationByRole: falls back to a used factor of 1 when the card carries no scaleByRole for a role', () => {
+    test('applyCalibrationByRole: a second observation folds into an EWA with alpha 0.5, per role', () => {
       const s = st.emptyStats();
       const result = loadCalibResult();
-      delete result.card.calib.scaleByRole.verify; // only work left on the card
-      // verify: ratio 1.0/1.5 = 0.6667, used falls back to 1 -> target 0.6667
-      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { verifier: { usd: 1.0 } } } });
-      near(s.calib.scaleByRole.verify, 2 / 3);
-      assert.equal(s.calib.lastByRole.verify.used, 1);
-    });
-
-    test('applyCalibrationByRole: a second observation folds into an EWA with alpha 0.5, per role independently', () => {
-      const s = st.emptyStats();
-      const result = loadCalibResult();
-      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 3.0 }, verifier: { usd: 1.0 } } } }); // work -> 1.44, verify -> 0.5333
-      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 2.5 }, verifier: { usd: 1.5 } } } });
-      // work: ratio 2.5/2.5 = 1.0, used 1.2 -> target 1.2 -> new = 0.5*1.2 + 0.5*1.44 = 1.32
-      // verify: ratio 1.5/1.5 = 1.0, used 0.8 -> target 0.8 -> new = 0.5*0.8 + 0.5*0.533333 = 0.666667
-      near(s.calib.scaleByRole.work, 1.32);
-      near(s.calib.scaleByRole.verify, 2 / 3);
-      assert.deepEqual(s.calib.nByRole, { work: 2, verify: 2 });
+      st.applyCalibrationByRole(s, { result, ledgerJson: LEDGER }); // work 1.5
+      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 2.0 } } } });
+      // work: ratio 1, used 1.2 -> target 1.2 -> 0.5*1.2 + 0.5*1.5 = 1.35
+      near(s.calib.scaleByRole.work, 1.35);
+      assert.equal(s.calib.nByRole.work, 2);
       assert.equal(s.calib.lastByRole.work.at, 2);
     });
 
     test('applyCalibrationByRole clamps the per-role ratio to [0.1, 10]', () => {
       const s = st.emptyStats();
-      const result = loadCalibResult();
-      st.applyCalibrationByRole(s, { result, ledgerJson: { byKind: { work: { usd: 1000 } } } }); // ratio -> 10
+      st.applyCalibrationByRole(s, { result: loadCalibResult(), ledgerJson: { byKind: { work: { usd: 1000 } } } });
       assert.equal(s.calib.lastByRole.work.ratio, 10);
       const s2 = st.emptyStats();
-      st.applyCalibrationByRole(s2, { result, ledgerJson: { byKind: { work: { usd: 0.0001 } } } }); // ratio -> 0.1
+      st.applyCalibrationByRole(s2, { result: loadCalibResult(), ledgerJson: { byKind: { work: { usd: 0.0001 } } } });
       assert.equal(s2.calib.lastByRole.work.ratio, 0.1);
     });
 
-    test('applyCalibrationByRole migrates an old global calib.scale: legacyScale keeps it, scale resets to 1', () => {
+    test('applyCalibrationByRole archives a calib from another price model (or none) and starts fresh', () => {
       const s = st.emptyStats();
-      st.applyCalibration(s, { actualUsd: 8, estimatedUsd: 4 }); // old-style global scale = 2
-      assert.equal(s.calib.scale, 2);
-      st.applyCalibrationByRole(s, { result: loadCalibResult(), ledgerJson: { byKind: { work: { usd: 3.0 } } } });
-      assert.equal(s.calib.legacyScale, 2);
-      assert.equal(s.calib.scale, 1);
-      assert.equal(s.calib.n, 1); // the old global counter is left untouched by the per-role write
+      st.applyCalibration(s, { actualUsd: 8, estimatedUsd: 4 }); // legacy global scale = 2, no pm
+      const legacy = JSON.parse(JSON.stringify(s.calib));
+      st.applyCalibrationByRole(s, { result: loadCalibResult(), ledgerJson: LEDGER });
+      assert.deepEqual(s.calibArchive.legacy, legacy);
+      assert.equal(s.calib.pm, 3);
+      assert.equal(s.calib.nByRole.work, 1);
+      // a pm-2 calib is archived under its pm
+      const s2 = { ...st.emptyStats(), calib: { pm: 2, scaleByRole: { work: 0.4 }, nByRole: { work: 3 }, lastByRole: {} } };
+      st.applyCalibrationByRole(s2, { result: loadCalibResult(), ledgerJson: LEDGER });
+      assert.deepEqual(s2.calibArchive['2'].scaleByRole, { work: 0.4 });
+      near(s2.calib.scaleByRole.work, 1.5); // not blended with the pm-2 factor
     });
 
-    test('applyCalibrationByRole is a no-op on calib.scale/legacyScale when nothing gets written', () => {
+    test('applyCalibrationByRole leaves stats untouched when nothing gets written', () => {
       const s = st.emptyStats();
       st.applyCalibration(s, { actualUsd: 8, estimatedUsd: 4 });
-      st.applyCalibrationByRole(s, { result: { ledger: {} }, ledgerJson: { byKind: {} } }); // nothing estimable
-      assert.equal(s.calib.scale, 2);
-      assert.equal(s.calib.legacyScale, undefined);
+      const before = JSON.stringify(s);
+      st.applyCalibrationByRole(s, { result: { card: { calib: { pm: 3 } }, ledger: {} }, ledgerJson: { byKind: {} } });
+      assert.equal(JSON.stringify(s), before);
     });
 
-    test('CLI: update --ledger with a byKind breakdown writes calib.scaleByRole and resets the global scale', () => {
+    test('CLI: update --ledger with a byKind breakdown writes calib.scaleByRole under the price model', () => {
       const dir = tmpDir();
       const statsFile = path.join(dir, 'stats.json');
       const ledgerFile = path.join(dir, 'ledger.json');
-      fs.writeFileSync(ledgerFile, JSON.stringify({ byKind: { work: { usd: 3.0 }, verifier: { usd: 1.0 } }, totals: { usd: 4.0 } }));
+      fs.writeFileSync(ledgerFile, JSON.stringify({ ...LEDGER, totals: { usd: 4.0 } }));
       const r = run('stats.mjs', ['update', CALIB_OUTPUT, '--file', statsFile, '--ledger', ledgerFile]);
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stdout, /calib\.scaleByRole=\{"work":1\.44,"verify":0\.53\}/);
+      assert.match(r.stdout, /calib\.scaleByRole=\{"work":1\.5,"verify":0\.67\}/);
       const s = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
-      assert.equal(s.calib.scaleByRole.work, 1.44);
-      near(s.calib.scaleByRole.verify, 2 / 3 * 0.8);
-      assert.equal(s.calib.scale, 1);
+      assert.equal(s.calib.pm, 3);
+      near(s.calib.scaleByRole.work, 1.5);
     });
 
-    test('CLI: --summary prints CALIB with scaleByRole (2 decimals) and omits the global scale when it is 1', () => {
+    test('CLI: a ledger without byKind feeds no calibration and says why', () => {
       const dir = tmpDir();
       const statsFile = path.join(dir, 'stats.json');
       const ledgerFile = path.join(dir, 'ledger.json');
-      fs.writeFileSync(ledgerFile, JSON.stringify({ byKind: { work: { usd: 3.0 }, verifier: { usd: 1.0 } } }));
+      fs.writeFileSync(ledgerFile, JSON.stringify({ totals: { usd: 4.0 } }));
+      const r = run('stats.mjs', ['update', CALIB_OUTPUT, '--file', statsFile, '--ledger', ledgerFile]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /calib skipped \(ledger has no byKind/);
+      assert.equal(JSON.parse(fs.readFileSync(statsFile, 'utf8')).calib, undefined);
+    });
+
+    test('CLI: --summary prints CALIB with pm and scaleByRole only for the current price model', () => {
+      const dir = tmpDir();
+      const statsFile = path.join(dir, 'stats.json');
+      const ledgerFile = path.join(dir, 'ledger.json');
+      fs.writeFileSync(ledgerFile, JSON.stringify(LEDGER));
       run('stats.mjs', ['update', CALIB_OUTPUT, '--file', statsFile, '--ledger', ledgerFile]);
       const sum = run('stats.mjs', ['--summary', 'review', '--file', statsFile]);
       assert.equal(sum.status, 0, sum.stderr);
-      assert.doesNotMatch(sum.stdout, /"scale":/); // scale is 1 after migration -> omitted
-      assert.match(sum.stdout, /CALIB \{"scaleByRole":\{"work":1\.44,"verify":0\.53\}\}/);
+      assert.match(sum.stdout, /CALIB \{"pm":3,"scaleByRole":\{"work":1\.50,"verify":0\.67\}\}/);
+      assert.doesNotMatch(sum.stdout, /"scale":/);
       assert.match(sum.stdout, /pass this back to the foreman as args\.calib/);
+      // a calib from another price model prints nothing
+      const s = JSON.parse(fs.readFileSync(statsFile, 'utf8'));
+      s.calib.pm = 2;
+      fs.writeFileSync(statsFile, JSON.stringify(s));
+      assert.doesNotMatch(run('stats.mjs', ['--summary', 'review', '--file', statsFile]).stdout, /CALIB/);
     });
   });
 

@@ -201,21 +201,21 @@ test('pause: a plan above pauseUsd returns the card unstarted unless confirmed',
 
 test('estUsd: turn-aware formula, lean vs full prefix, caps, scale', () => {
   const K = core.calibrate()
-  assert.equal(K.baseCtxLean, 8000)
+  assert.equal(K.baseCtxLean, 11000)
   assert.equal(K.baseCtx, 15000)
   // turns ≈ (10 + in/2.5k) · effort factor, capped
   assert.equal(core.turnsFor({ model: 'opus', effort: 'high' }, 50000, K), 30)
   assert.equal(core.turnsFor({ model: 'opus', effort: 'high' }, 100000, K, 30), 30)
   assert.equal(core.turnsFor({ model: 'opus', effort: 'medium' }, 50000, K), 24)
-  // lean opus·high, 50k read, capped at 30 turns, no role: write (8k + 4·50k)·4·1.25 + read 30·(8k + 100k)·4·0.1 + out 30·1500·20
-  assert.equal(K.readFactor, 4)
-  const want = round((208000 * 4 * 1.25 + 30 * 108000 * 4 * 0.1 + 30 * 1500 * 20) / 1e6)
+  // lean opus·high, 50k read, capped at 30 turns, no role: write (11k + 1·50k)·4·1.25 + read 30·(11k + 25k)·4·0.1 + out 30·1500·20
+  assert.equal(K.readFactor, 1)
+  const want = round((61000 * 4 * 1.25 + 30 * 36000 * 4 * 0.1 + 30 * 1500 * 20) / 1e6)
   assert.equal(core.estUsd({ model: 'opus', effort: 'high' }, 50000, 0, K, { lean: true, cap: 30 }), want)
   // the full prefix + CLAUDE.md costs more than lean for the same work
   const full = core.estUsd({ model: 'opus', effort: 'high' }, 50000, 78000, K, { lean: false, cap: 30 })
   assert.ok(full > want * 1.4, `${full} vs ${want}`)
-  // calib.scale multiplies every estimate
-  assert.equal(core.estUsd({ model: 'opus', effort: 'high' }, 50000, 0, core.calibrate({ scale: 2 }), { lean: true, cap: 30 }), round(want * 2))
+  // calib.scale (from the current price model) multiplies every estimate
+  assert.equal(core.estUsd({ model: 'opus', effort: 'high' }, 50000, 0, core.calibrate({ pm: 3, scale: 2 }), { lean: true, cap: 30 }), round(want * 2))
   // haiku: no effort, fixed small output per turn
   assert.ok(core.estUsd({ model: 'haiku' }, 1000, 0, K, { lean: true }) < 0.1)
 })
@@ -228,7 +228,7 @@ test('price: ultracode baseline is unbounded (full prefix, CLAUDE.md, roaming) v
   const M = core.price(a, V, K)
   const ref = { model: 'opus', effort: 'xhigh' }
   const ultraO = { lean: false, cap: K.ultraTurnCap, readFactor: K.ultraReadFactor, role: 'work' }
-  assert.equal(M.U, round(6 * core.estUsd(ref, 40000, 30000, K, ultraO) + 2 * core.estUsd(ref, 20000, 30000, K, ultraO)))
+  assert.equal(M.U, round(6 * core.estUsd(ref, 40000, 30000, K, ultraO) + 2 * core.estUsd(ref, 40000 * K.verifierInFrac, 30000, K, ultraO)))
   assert.equal(M.C, round(0.5 * M.U))
   assert.ok(M.verifyUsd > 0)
   assert.ok(M.P + M.R < M.C)
@@ -678,19 +678,19 @@ const near = (x, y, msg) => assert.ok(Math.abs(x - y) <= 1.5e-4, `${msg || ''} $
 
 test('per-role calibration: agentOpts carries the role; estimates scale by role × global scale', () => {
   const K = core.calibrate()
-  assert.deepEqual(K.scaleByRole, { work: 1.3, verify: 0.3, inspect: 0.7 })
+  assert.deepEqual(K.scaleByRole, { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 })
   assert.equal(K.scale, 1)
   for (const k of ['implementer', 'worker', 'workerMcp', 'workerCtx']) assert.equal(core.agentOpts(k, K).role, 'work', k)
   assert.equal(core.agentOpts('skeptic', K).role, 'verify')
   assert.equal(core.agentOpts('inspector', K).role, 'inspect')
   const cell = { model: 'opus', effort: 'high' }
   const base = key => { const o = core.agentOpts(key, K); return core.estUsd(cell, 40000, 0, K, { lean: o.lean, cap: o.cap }) }
-  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('skeptic', K)), base('skeptic') * 0.3, 'skeptic')
-  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('inspector', K)), base('inspector') * 0.7, 'inspector')
-  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('worker', K)), base('worker') * 1.3, 'worker')
+  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('skeptic', K)), base('skeptic') * 0.35, 'skeptic')
+  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('inspector', K)), base('inspector') * 0.5, 'inspector')
+  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('worker', K)), base('worker') * 0.6, 'worker')
   // the global scale stays an extra multiplier on top of the role factor
-  const K2 = core.calibrate({ scale: 2 })
-  near(core.estUsd(cell, 40000, 0, K2, core.agentOpts('skeptic', K2)), base('skeptic') * 0.3 * 2, 'skeptic × scale')
+  const K2 = core.calibrate({ pm: 3, scale: 2 })
+  near(core.estUsd(cell, 40000, 0, K2, core.agentOpts('skeptic', K2)), base('skeptic') * 0.35 * 2, 'skeptic × scale')
   // the verification reserve is priced on the skeptic role
   const a = baseArgs()
   const V = core.validate(a)
@@ -699,19 +699,19 @@ test('per-role calibration: agentOpts carries the role; estimates scale by role 
 })
 
 test('calibrate merges scaleByRole like the other object fields', () => {
-  const K = core.calibrate({ scaleByRole: { verify: 0.5 }, scale: 1.2, highsPerUnit: 2 })
-  assert.deepEqual(K.scaleByRole, { work: 1.3, verify: 0.5, inspect: 0.7 })
+  const K = core.calibrate({ pm: 3, scaleByRole: { verify: 0.5 }, scale: 1.2, highsPerUnit: 2 })
+  assert.deepEqual(K.scaleByRole, { work: 0.6, verify: 0.5, inspect: 0.5, sweep: 0.8 })
   assert.equal(K.scale, 1.2)
   assert.equal(K.highsPerUnit, 2)
   assert.equal(K.mediumsPerUnit, 4)
-  assert.deepEqual(core.calibrate().scaleByRole, { work: 1.3, verify: 0.3, inspect: 0.7 }, 'defaults are not mutated')
+  assert.deepEqual(core.calibrate().scaleByRole, { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 }, 'defaults are not mutated')
 })
 
 test('the priced card carries the calibration factors it used', async () => {
   let { res } = await runFanout(baseArgs({ dryRun: true }), responder())
-  assert.deepEqual(res.card.calib, { scale: 1, scaleByRole: { work: 1.3, verify: 0.3, inspect: 0.7 } })
-  ;({ res } = await runFanout(baseArgs({ dryRun: true, calib: { scale: 1.5, scaleByRole: { verify: 0.2 } } }), responder()))
-  assert.deepEqual(res.card.calib, { scale: 1.5, scaleByRole: { work: 1.3, verify: 0.2, inspect: 0.7 } })
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1, scaleByRole: { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 } })
+  ;({ res } = await runFanout(baseArgs({ dryRun: true, calib: { pm: 3, scale: 1.5, scaleByRole: { verify: 0.2 } } }), responder()))
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 0.6, verify: 0.2, inspect: 0.5, sweep: 0.8 } })
 })
 
 test('medium defaults to rung V1: grounded, no skeptic launched', async () => {
@@ -790,4 +790,59 @@ test('inspector and skeptic prompts read through Bash, not the Read tool', async
   assert.ok(sk, 'a skeptic ran')
   assert.match(sk.prompt, /Check the files yourself with Bash \(`grep -n`, `nl -ba FILE \| sed -n/)
   assert.doesNotMatch(sk.prompt, /Read the files yourself/)
+})
+
+// ───────────────────────── 0.1.4: price model 3 ─────────────────────────
+
+test('price model 3: leak-free defaults', () => {
+  assert.equal(core.PRICE_MODEL, 3)
+  const K = core.calibrate()
+  assert.equal(K.baseCtxLean, 11000)
+  assert.equal(K.readFactor, 1)
+  assert.equal(K.ultraReadFactor, 4, 'ultracode agents read with Read and still get the nested CLAUDE.md')
+  assert.equal(K.verifierInFrac, 0.25)
+  assert.equal(K.sweepInFrac, 0.25)
+  assert.deepEqual(K.scaleByRole, { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 })
+})
+
+test('sweep is priced on its own role and a fraction of inAvg; the deep critic stays work', async () => {
+  const K = core.calibrate()
+  assert.equal(core.agentOpts('worker', K, 'sweep').role, 'sweep')
+  assert.equal(core.agentOpts('worker', K, 'sweep').lean, true)
+  const a = baseArgs({ sweep: { rounds: 2 } })
+  const V = core.validate(a)
+  const M = core.price(a, V, K)
+  const sweepO = core.agentOpts('worker', K, 'sweep')
+  near(M.sweepUsd, 2 * core.estUsd(V.sweepCell, 40000 * 0.25, 0, K, sweepO), 'sweepUsd')
+  const raw = core.estUsd(V.sweepCell, 10000, 0, K, { lean: sweepO.lean, cap: sweepO.cap })
+  near(core.estUsd(V.sweepCell, 10000, 0, K, sweepO), raw * 0.8, 'sweep role factor')
+  // runtime: the sweep round commits the same sweep-role estimate
+  const { res } = await runFanout({ ...a, sweep: { rounds: 1 }, caps: { pauseUsd: 1000 } }, responder())
+  assert.equal(res.ledger.sweeps[0].estUsd, core.estUsd(V.sweepCell, 40000 * 0.25, 0, K, sweepO))
+  // deep critic: role work
+  const d = baseArgs({ depth: 'deep' })
+  const Vd = core.validate(d)
+  const Md = core.price(d, Vd, K)
+  near(Md.criticUsd, core.estUsd(Vd.criticCell, 40000 * K.verifierInFrac, 0, K, core.agentOpts('worker', K)), 'criticUsd')
+})
+
+test('calibrate: scale/scaleByRole only from the current price model; other overrides still apply', async () => {
+  let K = core.calibrate({ scale: 1.28, scaleByRole: { work: 2 }, highsPerUnit: 2 })
+  assert.equal(K.scale, 1)
+  assert.deepEqual(K.scaleByRole, core.DEFAULT_CALIB.scaleByRole)
+  assert.equal(K.highsPerUnit, 2)
+  assert.deepEqual(K.warnings, ['calib from price model none ignored (current 3)'])
+  K = core.calibrate({ pm: 2, scaleByRole: { verify: 0.1 } })
+  assert.deepEqual(K.warnings, ['calib from price model 2 ignored (current 3)'])
+  assert.equal(K.scaleByRole.verify, 0.35)
+  K = core.calibrate({ pm: 3, scale: 1.1, scaleByRole: { verify: 0.2 } })
+  assert.deepEqual(K.warnings, [])
+  assert.equal(K.scale, 1.1)
+  assert.equal(K.scaleByRole.verify, 0.2)
+  assert.deepEqual(core.calibrate({ highsPerUnit: 2 }).warnings, [], 'no factors passed -> nothing to warn about')
+  // the warning reaches the dry-run card's warnings; the card records pm
+  const { res } = await runFanout(baseArgs({ dryRun: true, calib: { scale: 1.28 } }), responder())
+  assert.ok(res.warnings.includes('calib from price model none ignored (current 3)'), JSON.stringify(res.warnings))
+  assert.equal(res.card.calib.pm, 3)
+  assert.equal(res.card.calib.scale, 1)
 })

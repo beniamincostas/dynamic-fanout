@@ -4,7 +4,7 @@
     "started": true,
     "card": {
       "kind": "review", "depth": "standard", "S": "opus", "W": "opus", "refEffort": "xhigh", "refSource": "default",
-      "calib": { "scale": 1, "scaleByRole": { "work": 1.2, "verify": 0.8 } }
+      "calib": { "pm": 3, "scale": 1, "scaleByRole": { "work": 1.2, "verify": 0.8 } }
     },
     "digest": {
       "counts": { "units": 2, "ok": 2, "okRerouted": 0, "okPromoted": 0, "brief": 0, "unverified": 0, "claims": 2,

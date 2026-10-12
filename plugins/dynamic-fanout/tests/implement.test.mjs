@@ -109,6 +109,10 @@ test('pricing: the foreman gets one implement card per theme, dry run, ctx keep,
   const b = baseArgs({ themes: [theme('t1', { in: undefined })], dryRun: true })
   const r2 = await run(b)
   assert.equal(r2.workflowCalls[0].args.ultra.inAvg, 30000)
+  // a theme's ctxTok (its CLAUDE.md chain) passes through to the card; absent stays absent
+  assert.equal('ctxTok' in fa.units[0], false)
+  const c = baseArgs({ themes: [theme('t1', { in: 20000, ctxTok: 45000 })], dryRun: true })
+  assert.equal((await run(c)).workflowCalls[0].args.units[0].ctxTok, 45000)
 })
 
 // ───────────────────────── money: refusal, dry run, pause ─────────────────────────

@@ -34,36 +34,45 @@ const DEFAULT_TOPK = { quick: 6, standard: 12, deep: 25 }
 const DEFAULT_ROUNDS = { quick: 0, standard: 1, deep: 2 }
 const MAX_INSPECT_QUOTES = 40
 
+// Bump PRICE_MODEL whenever estUsd's structure or DEFAULT_CALIB's defaults change: learned
+// factors (args.calib.scale / scaleByRole, from stats.mjs) only hold for the model they were
+// learned under, so calibrate() ignores factors that carry another (or no) price model.
+const PRICE_MODEL = 3
+
 const DEFAULT_CALIB = {
   prices: { haiku: { in: 1, out: 5 }, sonnet: { in: 2, out: 10 }, opus: { in: 4, out: 20 }, fable: { in: 10, out: 50 } },
   cacheWrite: 1.25,
   cacheRead: 0.1,
-  // Calibrated on 119 real agents (2026-10-09 review + implementation run):
-  // - fixed prefix: allowlisted crew agents start at ~6-8k tokens; full-tool agents ~15k
-  //   before CLAUDE.md (which adds ctxTok, ~78k on a heavy subtree);
-  // - unbounded agents ran 28-65 turns and grew their context to 2.4-5.6x what they were
-  //   planned to read; crew agents are now turn-capped and told to read targeted ranges.
-  baseCtxLean: 8000,
+  // Price model 3, fitted on a measured 23-agent research run once the nested CLAUDE.md leak
+  // was gone (Read attaches every CLAUDE.md between the session cwd and the file read; lean
+  // agents now read through Bash, which does not):
+  // - fixed prefix: lean agents start at 7-12.5k tokens and gain ~3-4k of tool/instruction
+  //   attachments on turn 2; full-tool agents ~15k before CLAUDE.md (ctxTok, ~78k on a heavy
+  //   subtree);
+  // - leak-free workers read 5-24k tokens in 4-16 API turns.
+  baseCtxLean: 11000,
   baseCtx: 15000,
   turnsBase: 10,
   tokPerTurn: 2500,
   effortTurns: { low: 0.6, medium: 0.8, high: 1.0, xhigh: 1.3, max: 1.6 },
   outPerTurn: { low: 600, medium: 1000, high: 1500, xhigh: 1800, max: 2200 },
   haikuOutPerTurn: 500,
-  // 0.1.2 validation run: context still grew ~5x the planned reading when unbounded and
-  // ~4-5x even when turn-capped with a targeted-reading prompt (workers ran 1.66x over at 3).
-  readFactor: 4,
+  // The old 4x context growth over the planned reading was mostly the nested CLAUDE.md, now
+  // gone for lean agents; ctx keep units price their CLAUDE.md chain through ctxTok instead.
+  // Ultracode's agents use Read and do get the nested CLAUDE.md, so their factor stays 4.
+  readFactor: 1,
   ultraReadFactor: 4,
   ultraTurnCap: 80,
   caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
   inspectorIn: 12000,
-  verifierInFrac: 0.5,
-  // Per-role multipliers from the 0.1.1 validation run (estimate -> actual): workers
-  // $10.42 -> $17.29 (1.66 at readFactor 3; ~1.3 left after readFactor 4), skeptics
-  // $3.31 -> $1.31 (0.40; 0.19 in a verify-only pass), inspectors $1.77 -> $1.28 (0.72).
-  // One global factor (1.28) would price skeptics ~4x too high and starve verification.
-  scaleByRole: { work: 1.3, verify: 0.3, inspect: 0.7 },
-  // Global extra multiplier on top of scaleByRole (self-calibration via stats.mjs).
+  // Skeptics reading through Bash read 4-10k tokens; the gap sweep re-reads a slice of scope.
+  verifierInFrac: 0.25,
+  sweepInFrac: 0.25,
+  // Per-role multipliers. The leak-free fit of the measured run at these settings was work
+  // 0.41, verify 0.19, inspect 0.25, sweep 0.72; the priors sit above the fit on purpose,
+  // because under-estimating exhausts the work pool and starves verification.
+  scaleByRole: { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 },
+  // Global extra multiplier on top of scaleByRole (only honoured from the same price model).
   scale: 1,
   // Expected findings per unit, for sizing the verification reserve. Measured: 7 high +
   // 34 medium from 8 review units.
@@ -78,10 +87,16 @@ const round2 = x => Math.round(x * 100) / 100
 const round4 = x => Math.round(x * 10000) / 10000
 const minEffort = (want, cap) => (er(cap) >= 0 && er(want) > er(cap) ? cap : want)
 
+// Learned factors (scale, scaleByRole) are honoured only when they carry the current price
+// model (c.pm); anything else is dropped with a warning. K.warnings reaches the run's warnings.
 function calibrate(c) {
   const K = JSON.parse(JSON.stringify(DEFAULT_CALIB))
+  K.warnings = []
   if (!c || typeof c !== 'object') return K
+  const learned = c.pm === PRICE_MODEL
+  if (!learned && ('scale' in c || 'scaleByRole' in c)) K.warnings.push(`calib from price model ${c.pm === undefined || c.pm === null ? 'none' : c.pm} ignored (current ${PRICE_MODEL})`)
   for (const k of Object.keys(c)) {
+    if (!learned && (k === 'scale' || k === 'scaleByRole')) continue
     if (k === 'prices' && c.prices && typeof c.prices === 'object') {
       for (const m of Object.keys(c.prices)) K.prices[m] = { ...(K.prices[m] || {}), ...c.prices[m] }
     } else if (['effortTurns', 'outPerTurn', 'caps', 'scaleByRole'].includes(k) && c[k] && typeof c[k] === 'object') {
@@ -190,8 +205,10 @@ function typeKey(u) {
 }
 const LEAN_TYPES = ['worker', 'skeptic', 'inspector']
 const ROLE_OF = { implementer: 'work', worker: 'work', workerMcp: 'work', workerCtx: 'work', skeptic: 'verify', inspector: 'inspect' }
-function agentOpts(key, K) {
-  return { lean: LEAN_TYPES.includes(key), cap: K.caps[key] || null, role: ROLE_OF[key] || 'work' }
+// role overrides the agent type's role: the gap sweep runs on a worker but is priced (and
+// calibrated) as its own role 'sweep'.
+function agentOpts(key, K, role) {
+  return { lean: LEAN_TYPES.includes(key), cap: K.caps[key] || null, role: role || ROLE_OF[key] || 'work' }
 }
 
 // topK and batch size of the verification stage (shared by price() and verify()).
@@ -379,6 +396,8 @@ function price(a, V, K) {
   const inspO = agentOpts('inspector', K)
   const skepO = agentOpts('skeptic', K)
   const workO = agentOpts('worker', K)
+  const sweepO = agentOpts('worker', K, 'sweep')
+  const sweepIn = inAvg * K.sweepInFrac
   let P = 0, parityP = 0, plannedOut = 0, plannedAgents = 0, rerouteSum = 0, floor = 0, b2Earmark = 0
   for (const u of V.units) {
     if (!u.cell || mr(u.cell.model) < 0) continue
@@ -405,10 +424,10 @@ function price(a, V, K) {
   const vcfg = a.verify || {}
   const expected = Number.isInteger(vcfg.expected) ? Math.max(0, vcfg.expected) : expectedVerifiers(nUnits, a.depth, vcfg, V.rungs, K)
   const verifyUsd = expected * estUsd(V.V3, vIn, 0, K, skepO)
-  const sweepUsd = V.rounds * estUsd(V.sweepCell, inAvg, 0, K, workO)
+  const sweepUsd = V.rounds * estUsd(V.sweepCell, sweepIn, 0, K, sweepO)
   const criticUsd = a.depth === 'deep' ? estUsd(V.criticCell, vIn, 0, K, workO) : 0
   P += verifyUsd + sweepUsd + criticUsd
-  plannedOut += expected * outTok(V.V3, K, turnsFor(V.V3, vIn, K, skepO.cap)) + V.rounds * outTok(V.sweepCell, K, turnsFor(V.sweepCell, inAvg, K, workO.cap))
+  plannedOut += expected * outTok(V.V3, K, turnsFor(V.V3, vIn, K, skepO.cap)) + V.rounds * outTok(V.sweepCell, K, turnsFor(V.sweepCell, sweepIn, K, sweepO.cap))
     + (a.depth === 'deep' ? outTok(V.criticCell, K, turnsFor(V.criticCell, vIn, K, workO.cap)) : 0)
   plannedAgents += expected + V.rounds + (a.depth === 'deep' ? 1 : 0)
   const rate = typeof caps.rerouteRate === 'number' ? caps.rerouteRate : 0.1
@@ -422,7 +441,7 @@ function price(a, V, K) {
   if (typeof caps.ceilingUsd === 'number' && caps.ceilingUsd > 0) C = caps.ceilingUsd
   return {
     U: round4(U), P: round4(P), R: round4(R), C: round4(C), mult, parityP: round4(parityP),
-    b2Earmark: round4(b2Earmark), plannedOut, plannedAgents, expected, rounds: V.rounds, verifyUsd: round4(verifyUsd),
+    b2Earmark: round4(b2Earmark), plannedOut, plannedAgents, expected, rounds: V.rounds, verifyUsd: round4(verifyUsd), sweepUsd: round4(sweepUsd), criticUsd: round4(criticUsd),
   }
 }
 
@@ -472,7 +491,7 @@ function buildCard(a, V, M, K) {
     },
     plannedAgents: M.plannedAgents,
     // the factors these estimates were priced with, so stats.mjs updates relative to them
-    calib: { scale: K.scale, scaleByRole: { ...K.scaleByRole } },
+    calib: { pm: PRICE_MODEL, scale: K.scale, scaleByRole: { ...K.scaleByRole } },
     basis: (a.ultra && a.ultra.basis) || '',
   }
 }
@@ -888,6 +907,7 @@ if (!A || typeof A !== 'object' || !Object.keys(A).length) {
 phase('Validate')
 const K = calibrate(A.calib)
 const V = validate(A)
+V.warnings.push(...K.warnings)
 const M = V.units.length && mr(V.S) >= 0 && er(V.E) >= 0 ? price(A, V, K) : null
 if (M) moneyRails(A, V, M)
 const card = M ? buildCard(A, V, M, K) : null
@@ -1161,7 +1181,7 @@ async function sweep() {
   const scopeFiles = [...new Set(V.units.flatMap(u => u.scope.files))]
   const seenKeys = new Set(claims.map(c => claimKey(c, ['file', 'line'])).filter(Boolean))
   for (let r = 1; r <= V.rounds; r++) {
-    const est = estUsd(V.sweepCell, inAvg, 0, K, agentOpts('worker', K))
+    const est = estUsd(V.sweepCell, inAvg * K.sweepInFrac, 0, K, agentOpts('worker', K, 'sweep'))
     const why = blocked(est, 'work')
     if (why) { dropped.push({ what: 'sweep rounds', count: V.rounds - r + 1, reason: why }); break }
     commit(est, 'work', V.sweepCell)
