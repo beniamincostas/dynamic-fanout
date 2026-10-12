@@ -960,6 +960,12 @@ const b2Pending = new Set(V.units.filter(u => u.fbCell && u.v && u.v.B === 2).ma
 const ledger = { units: [], verifiers: [], inspectors: [], sweeps: [], cells: {}, reroutes: 0, promotions: [] }
 const unitResults = {}
 let claims = []
+// Union of every unit's scope files, for canonicalizing evidence that isn't tied to one unit
+// (sweep claims, and verdict counter_quote/support, which can cite any file in the task).
+const allScopeFiles = [...new Set(V.units.flatMap(u => (u.scope && u.scope.files) || []))]
+function scopeEvidence(list, scope) {
+  return (Array.isArray(list) ? list : []).map(e => (e && e.file ? { ...e, file: toScope(e.file, scope) } : e))
+}
 const dropped = []
 const warnings = [...V.warnings]
 
@@ -1085,7 +1091,7 @@ function finishUnit(L, u, outcome, reason, res, c, producer) {
   if (res) {
     ;(res.findings || []).forEach((f, i) => claims.push({
       cid: `${u.id}.f${i + 1}`, unit: u.id, severity: SEVERITIES.includes(f.severity) ? f.severity : 'medium',
-      title: f.title, claim: f.claim, evidence: Array.isArray(f.evidence) ? f.evidence : [],
+      title: f.title, claim: f.claim, evidence: scopeEvidence(f.evidence, u.scope.files),
       parity: u.parity, producer: producer || u.cell, bump: L.verifyBump, blast: u.v ? u.v.B : 0, floor: floorOf(u.checks),
       verdict: outcome === 'unverified' || outcome === 'brief' ? 'UNVERIFIED' : null,
       reason: outcome === 'unverified' || outcome === 'brief' ? `unit ${outcome}: ${reason || ''}`.trim() : null,
@@ -1220,7 +1226,7 @@ async function sweep() {
     ;((res && res.findings) || []).forEach((f, i) => {
       const c = {
         cid: `s${r}.f${i + 1}`, unit: 'sweep', severity: SEVERITIES.includes(f.severity) ? f.severity : 'medium', title: f.title,
-        claim: f.claim, evidence: Array.isArray(f.evidence) ? f.evidence : [], parity: false, producer: V.sweepCell, bump: 0,
+        claim: f.claim, evidence: scopeEvidence(f.evidence, scopeFiles), parity: false, producer: V.sweepCell, bump: 0,
         blast: Math.max(0, ...V.units.map(u => (u.v ? u.v.B : 0))), verdict: null, reason: null,
       }
       const k = claimKey(c, ['file', 'line'])
@@ -1275,8 +1281,8 @@ async function runBatch(b) {
     }
     const v = b.rung === 'V4' ? mergeVerdicts(got) : got[0]
     Object.assign(c, { verdict: v.verdict, verdictBy: `${b.id}·${cellKey(b.cell)}`, reason: v.reason || null })
-    if (v.counter_quote) c.counter_quote = v.counter_quote
-    if (v.support) c.support = v.support
+    if (v.counter_quote) c.counter_quote = v.counter_quote.file ? { ...v.counter_quote, file: toScope(v.counter_quote.file, allScopeFiles) } : v.counter_quote
+    if (v.support) c.support = v.support.file ? { ...v.support, file: toScope(v.support.file, allScopeFiles) } : v.support
     if (v.support_cmd) c.support_cmd = v.support_cmd
     if (v.severity && SEVERITIES.includes(v.severity)) c.verifiedSeverity = v.severity
   }
