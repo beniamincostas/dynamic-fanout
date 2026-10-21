@@ -1,5 +1,26 @@
 # Changelog
 
+## dynamic-fanout 0.1.6 — 2026-10-21
+
+From one production run: a UX and automation review of a report workbook (3 units, 63 claims,
+USD 4.95 against a USD 29.62 ultracode estimate). The run worked; four gaps cost master turns.
+- **Playbook `design.md`** for UX and workflow-usability reviews. The lean crew cannot see a
+  rendered surface, so the visual pass is the master's (screenshots, click test, empty states).
+  It defines three crew angles:
+  - touchpoints: how a person learns of a task, and the clicks to done
+  - hand-offs: trigger, who acts, silent waits, what the bot could carry
+  - a sonnet coupling inventory
+
+  It adds five lenses (first-time reader, interaction cost, continuity, hierarchy, empty and
+  failure states). Screenshots and doc URLs stay out of crew claims, because the inspector cannot
+  ground them. SKILL.md §1 names it, and a docs test fails for any playbook SKILL.md does not name.
+- **Reviewing a ref that is not checked out** (SKILL.md §2): the inspector and
+  `check-evidence.mjs` read the disk, so scope a clean worktree of that ref with absolute paths. The
+  run had to find one by hand, because its checkout was 16 commits behind `origin/main`.
+- **Plan mode** (SKILL.md §1): a read-only research, review or data crew may run while planning.
+- **`report.mjs --payload`** printed an object result as `[object Object]` in the text view; it now
+  prints indented JSON.
+
 ## dynamic-fanout 0.1.5 — 2026-10-21
 
 Two measurements since 0.1.4. **Seven production runs (208 agents):** the lean Bash read

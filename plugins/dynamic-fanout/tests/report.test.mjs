@@ -98,6 +98,12 @@ test('build: --payload keeps the full result, otherwise it is a trimmed one-line
   assert.deepEqual(full.units.find((u) => u.id === 'u1').result, { ok: true, n: 1 });
 });
 
+test('formatText: --payload prints an object result as JSON, never [object Object]', () => {
+  const text = rpt.formatText(rpt.build(RESULT, { payload: true }));
+  assert.doesNotMatch(text, /\[object Object\]/);
+  assert.match(text, /"ok": true/);
+});
+
 test('build: never throws on a missing or malformed doc', () => {
   assert.doesNotThrow(() => rpt.build({}));
   assert.doesNotThrow(() => rpt.build(null));
