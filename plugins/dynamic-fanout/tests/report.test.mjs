@@ -139,3 +139,14 @@ test('formatText: a merged claim lists the titles it absorbed, so a wrong merge 
   const text = rpt.formatText(rpt.build(doc))
   assert.match(text, /merged: u2\.f2 split drops the remainder/)
 })
+
+test('report: legend for PLAUSIBLE, filed->verified severity, header counted by verified severity', () => {
+  const rep = rpt.build(RESULT);
+  // u1.f1 high (no verifiedSeverity) counts as high; u1.f2 filed low, verified info counts as info.
+  assert.deepEqual(rep.header.claimsBySeverity, { blocker: 0, high: 1, medium: 0, low: 0, info: 1 });
+  const text = rpt.formatText(rep);
+  assert.ok(text.includes('PLAUSIBLE = grounded, not independently re-checked (in a blind audit plausible and confirmed findings were equally often true)'));
+  assert.match(text, /u1\.f2 {2}low->info {2}REFUTED/);
+  assert.match(text, /u1\.f1 {2}high {2}CONFIRMED/);
+  assert.match(text.split('\n')[0], /1 high \/ 0 medium \/ 0 low \/ 1 info/);
+});

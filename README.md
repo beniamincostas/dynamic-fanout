@@ -23,6 +23,25 @@ A deterministic foreman workflow enforces the cards:
 
 Code never picks a model or an effort.
 
+### 0.1.5: recall, severity and fewer lost claims
+
+Measured on seven production runs (208 agents) and a blind quality audit (46 findings
+re-judged by reference judges; recall measured against blind reviewers). 0 of 42
+non-refuted findings were false, but 61% were filed too high and recall was 60% for an
+opus·xhigh unit and 41% for a sonnet·medium one. 0.1.5:
+- **recall rule:** a review/research unit whose misses nobody would notice routes as V0,
+  so it never goes to Sonnet; parity and B2 review units can run as **`lenses: 2`** (two
+  copies, data and time, merged by dedup);
+- a **findings cap of 15** (was 8) and one **severity rubric** for producers and skeptics;
+  the skeptic states its own `verifiedSeverity`, which orders the digest;
+- a cited file whose quote the inspector resolved counts as read, and a failed unit's
+  grounded claims are **rescued** to verification instead of dumped as UNVERIFIED;
+  `rerouteRate` defaults to 0.2;
+- high/blocker below V2 needs a stated **`verify.waiver`**; the parity V3 floor applies
+  only to medium and above, so low claims no longer push mediums out of `topK`;
+- implementers price on their own `implement` role (prior 3.5); `report.mjs` shows
+  `filed->verified` severity and a PLAUSIBLE legend; the run card adds a `master:` line.
+
 ### 0.1.4: no nested CLAUDE.md for the lean crew
 
 `omitClaudeMd` only drops the CLAUDE.md files loaded at agent start. The Read tool attaches

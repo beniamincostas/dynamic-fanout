@@ -12,6 +12,8 @@
 // --unit filters to one unit id (its claims + its row). --min-severity keeps that severity and
 // above. --verdict keeps only the listed verdicts (comma-separated, case-insensitive).
 // --payload prints each unit's result payload in full instead of trimmed to 600 chars.
+// Claim severity prints as filed->verified when the skeptic re-rated it; the header counts and
+// the sort use verifiedSeverity ?? severity (--min-severity filters on the filed severity).
 // --json emits the same structure (header, units, claims) as JSON instead of text.
 // Never throws on missing fields; a malformed or partial doc still prints what it has.
 // Zero dependencies; Node >= 20.
@@ -21,6 +23,9 @@ import fs from 'node:fs';
 
 const SEVERITIES = ['info', 'low', 'medium', 'high', 'blocker'];
 const sevRank = (s) => Math.max(0, SEVERITIES.indexOf(s));
+// The skeptic's rating when it has one, else the filed severity (fanout.js stores both).
+const effSev = (c) => c.verifiedSeverity || c.severity;
+export const LEGEND = 'PLAUSIBLE = grounded, not independently re-checked (in a blind audit plausible and confirmed findings were equally often true)';
 
 /** Accept either the Workflow wrapper {summary, agentCount, logs, result} or RESULT itself. */
 export function unwrap(doc) {
@@ -69,11 +74,12 @@ export function build(doc, opts = {}) {
 
   const minRank = sevRank(opts.minSeverity || 'info');
   const verdictFilter = opts.verdicts && opts.verdicts.length ? new Set(opts.verdicts.map((v) => String(v).toUpperCase())) : null;
-  let claims = Array.isArray(results.claims) ? results.claims.slice() : [];
+  const allClaims = Array.isArray(results.claims) ? results.claims : [];
+  let claims = allClaims.slice();
   if (opts.unit) claims = claims.filter((c) => c.unit === opts.unit);
   claims = claims.filter((c) => sevRank(c.severity) >= minRank);
   if (verdictFilter) claims = claims.filter((c) => verdictFilter.has(String(c.verdict || '').toUpperCase()));
-  claims.sort((a, b) => sevRank(b.severity) - sevRank(a.severity));
+  claims.sort((a, b) => sevRank(effSev(b)) - sevRank(effSev(a)));
 
   const header = {
     kind: card.kind || null,
@@ -81,6 +87,8 @@ export function build(doc, opts = {}) {
     claimsByVerdict: digest.counts
       ? { confirmed: digest.counts.confirmed || 0, plausible: digest.counts.plausible || 0, refuted: digest.counts.refuted || 0, unverified: digest.counts.unverifiedClaims || 0, pending: digest.counts.pending || 0 }
       : null,
+    // Counted by verifiedSeverity ?? severity over every claim, before the display filters.
+    claimsBySeverity: Object.fromEntries(SEVERITIES.slice().reverse().map((sv) => [sv, allClaims.filter((c) => effSev(c) === sv).length])),
     money: digest.money ? { U: digest.money.U, P: digest.money.P, committed: digest.money.committedUsd } : null,
   };
 
@@ -105,6 +113,7 @@ export function formatText(rep) {
   const h = rep.header;
   lines.push(`report: ${h.kind || '?'} — ${h.units.ok}/${h.units.total} units ok`
     + (h.claimsByVerdict ? ` — claims: ${h.claimsByVerdict.confirmed} confirmed / ${h.claimsByVerdict.plausible} plausible / ${h.claimsByVerdict.refuted} refuted / ${h.claimsByVerdict.unverified} unverified` : '')
+    + (h.claimsBySeverity && Object.values(h.claimsBySeverity).some(Boolean) ? ` — ${Object.entries(h.claimsBySeverity).map(([k, v]) => `${v} ${k}`).join(' / ')}` : '')
     + (h.money ? ` — money U $${h.money.U} P $${h.money.P} committed $${h.money.committed}` : ''));
   if (rep.units.length) {
     lines.push('units:');
@@ -116,6 +125,7 @@ export function formatText(rep) {
   }
   if (rep.claims.length) {
     lines.push('claims:');
+    lines.push(`  ${LEGEND}`);
     for (const c of rep.claims) lines.push(formatClaim(c));
   }
   return lines.join('\n');

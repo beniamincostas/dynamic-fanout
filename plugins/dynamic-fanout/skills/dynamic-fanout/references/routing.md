@@ -52,6 +52,13 @@ Score each packed unit 0/1/2 on seven features, written as one string
 | **G** domain traps | none | a few, the capsule states them | several the capsule cannot fully state | model + `ctx:keep` |
 
 Note the direction of V: **V2 is the easy end** (deterministic check), V0 the hard end.
+
+**Recall rule (review and research units).** Score V by whether a **missed** issue would be
+noticed, not by whether each reported finding can be checked. If nobody would notice a miss,
+the unit is **V0 for routing** even when every finding it returns is grep-checkable, so it
+does not go to Sonnet. Measured against blind reviewers, an opus·xhigh unit found ~60% of
+the issues and a sonnet·medium unit ~41%; a quote check catches false findings, never
+missing ones.
 **N** adds no effort. It forces an independent re-derivation by a *different method*
 (`check` must contain `rederive`; optional `rd` cell, default = `p`).
 
@@ -92,6 +99,10 @@ Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs 
    both invisible and consequential, so the unit runs on ultracode's cell:
    **S·E_ref, `fb:null`, claims at V3** (on S·high). The rail enforces the cell and `fb`
    only; `ctx` is your choice and defaults to `omit` (section 4).
+   Give parity and B2 review/research units **`lenses: 2`**: the card runs as two copies
+   (`<id>A` inputs and data, `<id>B` time and ordering), each priced, inspected and
+   re-routed on its own, and dedup merges what both report. Two differently-focused
+   reviewers overlap little (26 issues merged into 17). Not with `n:1`.
    Every other unit is cheaper only because it is easy, or because a named objective check
    catches its failure. `check:none` outside parity is a planning error.
 5. **Unsure → W·medium plus an objective check.** Never guess low; a cheap miss costs a
@@ -102,7 +113,12 @@ Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs 
      is enough when the likely failure is thoroughness, not capability;
    - **`null`** when `p` ≥ W·high (strengthen the check instead), and for parity units,
      superseding units and peripheral B0 units;
-   - units that carry the answer always get a non-null `fb` unless `p` ≥ W·high.
+   - units that carry the answer always get a non-null `fb` unless `p` ≥ W·high;
+   - the re-route reserve is `caps.rerouteRate` × the work pool, default 0.2 (measured
+     capability failures ~16% of units). A cited file with a quote the inspector resolved
+     counts as read (Bash readers cite files they grepped). When a unit still ends
+     unverified (re-route refused, `fb` null or failed), its claims with a resolved quote
+     are **rescued** to verification one rung higher; only ungrounded claims stay UNVERIFIED.
 6a. **Whole-diff reviews use the reviewer agent, not the skeptic.** A single claim's
    verification is a skeptic call (12 turns, built for one claim's evidence); a whole-PR
    review over a run's commits is `dynamic-fanout:implement`'s own `dynamic-fanout:reviewer`
@@ -113,6 +129,17 @@ Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs 
    - default rungs: blocker/high → V3, **medium → V2** (since 0.1.4: one lean skeptic per
      medium, bounded by `topK`), low/info → V0. Set `rungs.medium: 'V1'` only when this
      task's mediums are noise;
+   - high/blocker below V2 is rejected by the rails unless **`verify.waiver`** (≤200 chars)
+     states why; the waiver is echoed in the card and digest;
+   - the parity floor (V3) applies to parity claims of **medium and above** only; low/info
+     parity claims keep their rung, so `topK` does not cut mediums for them;
+   - **findings and severity:** a unit returns ≤15 findings (one stopped at the old cap of 8
+     missed 6 real issues). Producers and skeptics share one rubric — blocker = wrong
+     customer-facing money or legal action, or data loss, in normal operation; high = a wrong
+     outcome likely in realistic cases; medium = edge cases or a real operational risk; low =
+     minor; info = an observation; most findings are medium or low. The skeptic must state
+     its own rating (`verifiedSeverity`), which orders `digest.top`; the rung still comes from
+     the filed severity;
    - **support rule:** a skeptic's CONFIRMED must carry its own support — `support
      {file, line, quote}`, a verbatim quote it found (preferably not the producer's line),
      or for an absence claim `support_cmd`, the exact search that came back empty. The
@@ -211,6 +238,10 @@ with planned turns = min(cap, round((10 + in/2500) × effort factor)) and the pr
 | `implementer` | role `implement` | 60 | 15k + `ctxTok` |
 | `skeptic` | verifiers | 12 | lean 8k |
 | `inspector` | quote checks, B2 units | 6 | lean 8k |
+
+Implementers price on their own role, `implement` (prior 3.5: they keep CLAUDE.md, run test
+suites and take many turns; priced as work they came out ~3.5× low). Pass the `CALIB` line
+from `stats.mjs` as implement `args.calib` so learned factors apply.
 
 Effort factor: low 0.6, medium 0.8, high 1.0, xhigh 1.3, max 1.6 (haiku 0.6). Size each
 unit so its planned turns stay **below** its cap; planned turns at the cap mean the unit

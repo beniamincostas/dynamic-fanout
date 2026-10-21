@@ -78,7 +78,8 @@ a capability failure; <50 % selects `redo` mode.
 `counter_quote {file, line, quote}` is kept as PLAUSIBLE; a CONFIRMED verdict without the
 skeptic's own `support {file, line, quote}` (a verbatim quote it found) or, for an absence
 claim, `support_cmd` (the exact search that came back empty) is kept as PLAUSIBLE;
-UNVERIFIABLE becomes UNVERIFIED.
+UNVERIFIABLE becomes UNVERIFIED. `severity` is **required** (since 0.1.5): the skeptic's
+own rating by the shared rubric, stored as the claim's `verifiedSeverity`.
 
 ## CRITIC: deep runs only
 

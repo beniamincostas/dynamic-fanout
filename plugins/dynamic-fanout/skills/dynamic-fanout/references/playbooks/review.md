@@ -58,6 +58,19 @@ it never overrides the rails in `workflow.md`.
   `fb: null`, claims at V3, with `ctx:'omit'` plus a rules capsule and `path:line`
   pointers into the relevant CLAUDE.md sections. Never downgrade them to fit the ceiling;
   pack harder or set `caps.parityBound`.
+- **Recall rule:** score V by whether a *missed* issue would be noticed. If not, the unit is
+  V0 for routing even when each finding is grep-checkable, so it does not go to Sonnet
+  (measured recall ~60% for opus·xhigh, ~41% for sonnet·medium). Give parity and B2 review
+  units `lenses: 2` (two copies: inputs and data, time and ordering; dedup merges them),
+  because two differently-focused reviewers overlap little.
+- The ≤15 cap exists because a unit stopped at the old cap of 8 missed 6 real issues.
+- **Severity rubric** (producers and skeptics, `SEVERITY_RUBRIC` in fanout.js): blocker =
+  wrong customer-facing money or legal action, or data loss, in normal operation; high = a
+  wrong outcome is likely in realistic cases; medium = edge cases or a real operational
+  risk; low = minor; info = an observation. Rate by what the code does today:
+  most findings are medium or low (a blind audit found 61% filed too high, often by two
+  levels). The
+  skeptic states its own `verifiedSeverity`; `report.mjs` shows `filed->verified`.
 - "Deployed code" alone is B1, not B2: B2 means booked numbers, money movement or a
   deploy break that is invisible until production.
 - Everything cheaper than parity must name the check that catches its failure (`tests`,

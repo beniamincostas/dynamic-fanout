@@ -1,5 +1,51 @@
 # Changelog
 
+## dynamic-fanout 0.1.5 — 2026-10-21
+
+Two measurements since 0.1.4. **Seven production runs (208 agents):** the lean Bash read
+path works (0 nested CLAUDE.md attachments), but 3 re-routes were refused for budget after
+"cited but not read" failures — agents that read through Bash cite files they grepped
+without listing them in `files_read` — and 32 claims were then marked UNVERIFIED unchecked
+(one master re-queued 16 by hand). One run declared every rung V0, so 5 high findings were
+never checked. Parity raised low and info claims to V3, and `topK` then cut 20 claims,
+including 9 mediums. Positional `$N` argument substitution mangled dollar amounts in
+SKILL.md. A deep verify stage with 109 claims needed a hand-written 141 KB wrapper script.
+Master turns at 600–855k tokens of context cost about USD 0.40 each; the master was about
+43% of a deep run. Estimate/actual ranged 0.77–2.8×; the learned work factor went
+0.6 → 1.04 → 0.81. **A blind quality audit** (46 sampled findings re-judged by reference
+judges on ultracode's own cell; recall on 2 scopes by two blind reviewers each plus an
+adjudicator): 0 of 42 non-refuted findings were false; 30% were overstated (real mechanism,
+overstated trigger or impact); CONFIRMED and PLAUSIBLE were equally often true; 61% were
+filed too high, often by two levels; recall was 60% for an opus·xhigh unit and 41% for a
+sonnet·medium unit against the blind reviewers (the run also found real issues they
+missed); a unit that stopped at the 8-finding cap missed 6 real issues; two
+differently-focused reviewers overlapped little (26 issues merged into 17).
+
+- **Recall rule** (SKILL.md, routing.md, review/research playbooks): score V by whether a
+  missed issue would be noticed; if not, the unit routes as V0 and does not go to Sonnet.
+- **`lenses: 2`** runs a review/research card as two copies (inputs and data / time and
+  ordering), each priced, inspected and re-routed on its own; dedup merges them.
+- **Findings cap 15** (was 8); `mediumsPerUnit` 4 → 5. One **severity rubric** for
+  producers and skeptics; VERDICT `severity` is required and stored as `verifiedSeverity`,
+  which orders `digest.top` and `digest.counts.bySeverity`.
+- **Cited but not read:** a cited file with an inspector-resolved quote counts as read;
+  without an inspector it is only a soft signal. A unit that ends unverified has its
+  grounded claims **rescued** to verification one rung higher (`digest.counts.rescued`).
+- **`verify.waiver`:** high/blocker below V2 is a rails error unless a waiver (≤200 chars)
+  states why; echoed in the card and digest.
+- **Parity floor** V3 only for medium and above. Inspector quotes per call 40 → 60.
+- **Pricing:** `rerouteRate` 0.1 → 0.2 (7 capability failures in 44 units); `scaleByRole`
+  `{work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5}` with implementers on
+  their own `implement` role; implement `args.calib` passes learned factors through.
+- **report.mjs:** a PLAUSIBLE legend, `filed->verified` severity, header counts by
+  `verifiedSeverity ?? severity`.
+- **SKILL.md:** amounts written as `USD 40.53` (a docs test rejects a dollar sign before a
+  digit); the run card has a `master:` line (planned master turns × current context ×
+  cache-read price; above ~300k suggest `/compact` or a fresh session).
+- **workflow.md:** `lenses`, `verify.waiver`, and the deep-verify wrapper pattern (a script
+  that embeds ARGS and returns `await workflow('dynamic-fanout:fanout', ARGS)`, launched
+  with Workflow `scriptPath`).
+
 ## dynamic-fanout 0.1.4 — 2026-10-12
 
 A 23-agent research run showed where the crew's money really went. `omitClaudeMd: true`
