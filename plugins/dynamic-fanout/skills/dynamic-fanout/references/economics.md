@@ -347,7 +347,7 @@ calib: {
   readFactor: 1, ultraReadFactor: 4, ultraTurnCap: 80,
   caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
   inspectorIn: 12000, verifierInFrac: 0.25, sweepInFrac: 0.25,
-  scaleByRole: { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 }, scale: 1,
+  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5 }, scale: 1,
   highsPerUnit: 0.9, mediumsPerUnit: 5
 }
 ```

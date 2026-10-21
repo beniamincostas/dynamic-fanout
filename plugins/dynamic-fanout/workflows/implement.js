@@ -33,7 +33,9 @@ const TOOL_CALLS = 35
 const er = e => EFFORTS.indexOf(e)
 const round4 = x => Math.round(x * 10000) / 10000
 const minEffort = (want, cap) => (er(cap) >= 0 && er(want) > er(cap) ? cap : want)
-const REVIEW_BRIEF_CHARS = 1500
+// 1500 cut a reviewer off mid-brief on a 4-theme release; the whole list stays well under a
+// typical prompt budget at 4000 per theme.
+const REVIEW_BRIEF_CHARS = 4000
 const briefText = s => {
   const t = String(s || '').replace(/\s+/g, ' ').trim()
   return t.length > REVIEW_BRIEF_CHARS ? `${t.slice(0, REVIEW_BRIEF_CHARS)}…` : t

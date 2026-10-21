@@ -320,11 +320,16 @@ export function actualUsdByRole(ledgerJson, result) {
   let work = ['work', 'critic'].some((k) => k in byKind)
     ? ['work', 'critic'].reduce((t, k) => t + (k in byKind ? usd(k) : 0), 0)
     : null;
-  // Implement themes are tagged like work units: their actual comes out of byKind.work by
-  // unit id (byUnit), for the card's units with role 'implement'.
-  const byUnit = ledgerJson.byUnit && typeof ledgerJson.byUnit === 'object' ? ledgerJson.byUnit : {};
-  const ids = [...implementIds(result)].filter((id) => id in byUnit);
-  const implement = ids.length ? ids.reduce((t, id) => t + (Number(byUnit[id]?.usd) || 0), 0) : null;
+  // Implement themes are tagged like work units: their actual comes out of byKind.work, summed
+  // over the implementers' own tags ('df:<id>:<n>') for the card's units with role 'implement'.
+  // byUnit is not used: it adds the unit's inspectors, which byKind.inspector already counts.
+  const byTag = ledgerJson.byTag && typeof ledgerJson.byTag === 'object' ? ledgerJson.byTag : {};
+  const ids = new Set(implementIds(result));
+  let implement = null;
+  for (const [tag, v] of Object.entries(byTag)) {
+    const m = /^df:([^:]+):\d+$/.exec(tag);
+    if (m && ids.has(m[1])) implement = (implement ?? 0) + (Number(v?.usd) || 0);
+  }
   if (implement !== null && work !== null) work = Math.max(0, work - implement);
   return {
     work,

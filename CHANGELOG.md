@@ -45,6 +45,18 @@ differently-focused reviewers overlapped little (26 issues merged into 17).
 - **workflow.md:** `lenses`, `verify.waiver`, and the deep-verify wrapper pattern (a script
   that embeds ARGS and returns `await workflow('dynamic-fanout:fanout', ARGS)`, launched
   with Workflow `scriptPath`).
+- **Whole-diff review follow-ups** (the build's reviewer said NEEDS CHANGES):
+  - a rescued claim always gets a skeptic (rung floor V2), so a failed unit's low findings
+    are not passed as PLAUSIBLE on quotes alone;
+  - `lenses: 2` is refused on an allow-up card, which would otherwise run two above-session
+    agents past the at-most-one rail;
+  - the implement calibration reads the implementers' own tags, so inspector cost is no
+    longer counted under both `implement` and `inspect`;
+  - the implement reviewer sees up to 4000 characters per brief (1500 cut it off);
+  - the economics.md defaults block states the new priors, and a docs test now checks every
+    `scaleByRole` literal there;
+  - tests cover rescue after a re-route that returned nothing and after a fallback that
+    failed again.
 
 ## dynamic-fanout 0.1.4 — 2026-10-12
 
