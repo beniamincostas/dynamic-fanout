@@ -57,7 +57,9 @@ On a Haiku session, run solo. Fan-out needs a planner stronger than the crew.
 
 ## 1. Triage and the solo gate (inline, cheap)
 
-Classify the task: kind (research / review / data / implement), size, risk, ambiguity. Then load **one** playbook: `references/playbooks/<kind>.md`.
+Classify the task: kind (research / review / data / implement), size, risk, ambiguity. Then load **one** playbook: `references/playbooks/<kind>.md`. A UX or workflow-usability review ("is it intuitive", "how many clicks", "what happens next", "which hand-offs could the bot take over") loads `references/playbooks/design.md` instead and runs as `kind: 'research'`: the crew cannot see the rendered surface, so the visual pass stays yours.
+
+Plan mode: the crew of a research, review or data run is read-only, so it may run while you plan; implement mode may not.
 
 **Go solo** (no fan-out at all) when any of these holds:
 - the task is one dependent chain of reasoning;
@@ -87,6 +89,7 @@ Why: in a benchmark, a solo review cost under 0.15× ultracode but missed exactl
 2. **Measure each unit's CLAUDE.md chain** in the same batch: `node <scripts>/claude-md-chain.mjs <session-cwd> <unit paths…>` lists the CLAUDE.md files a Read-capable agent gets attached for those paths (every one between the session cwd and the file), with bytes and tokens. A `ctx:'keep'` card carries that chain's tokens as its own `ctxTok`. Lean (`ctx:'omit'`) units read through Bash, which attaches nothing, so they pay no nested CLAUDE.md.
 3. In the same batch, run `node <scripts>/stats.mjs --summary <kind>` for routing history. It prints a `CALIB {"pm":N,"scaleByRole":{…}}` line only when the stored calibration was learned under the current price model; pass that object verbatim as `args.calib` (`pm` is what makes the foreman honour it; factors from another price model are ignored with a warning).
 4. Exclude `.env`, key files, duplicate copies of the same code (vendored or mirrored folders) and generated `output/`, unless one of them is the target.
+   **Code that is not checked out at the session cwd** (a branch or `origin/main` ahead of the checkout): the inspector and `check-evidence.mjs` read the files on disk, so scoping a ref that is not there makes every quote fail as a capability error. Point every scope path at a clean worktree of that ref (absolute paths, quoted when they hold spaces): `git worktree add <dir> <ref>` (outside plan mode), or an existing worktree whose tree equals the ref (`git diff --stat <ref> <worktree HEAD> -- <scope>` empty, `git -C <worktree> status --short` empty). Put the worktree path in the shared preamble too.
 5. **Pack:**
    - split a unit off only if its work is ≥2× its path's fixed context;
    - keep same-subtree units together, so a nested CLAUDE.md is paid once;

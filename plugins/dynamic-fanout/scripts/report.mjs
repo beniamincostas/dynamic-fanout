@@ -120,7 +120,10 @@ export function formatText(rep) {
     for (const u of rep.units) {
       lines.push(`  ${u.id}  ${u.role || '?'}  ${u.cell || '?'}  ${u.outcome || '?'}/${u.status || '?'}  ${u.summary || ''}`);
       if (u.assumptions.length) lines.push(`    assumptions: ${u.assumptions.join('; ')}`);
-      lines.push(`    files_read: ${u.files_read}  result: ${u.result}`);
+      // --payload keeps the result as an object: print it as JSON, never „[object Object]“
+      const result = u.result !== null && typeof u.result === 'object'
+        ? JSON.stringify(u.result, null, 2).replace(/\n/g, '\n      ') : u.result;
+      lines.push(`    files_read: ${u.files_read}  result: ${result}`);
     }
   }
   if (rep.claims.length) {
