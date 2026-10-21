@@ -54,6 +54,17 @@ Rules that matter here:
 - Research is rarely parity: V0∧B2∧D≥1 needs a consequential, uncheckable claim. If the
   answer drives a booking or deploy decision, treat that unit as parity (S·E_ref,
   `fb:null`, `ctx:omit` with a capsule and CLAUDE.md pointers).
+- **Recall rule:** when the question is "what is there / what is wrong", score V by whether a
+  *missed* item would be noticed. If not, the unit is V0 for routing even when each finding
+  is quote-checkable, so it does not go to Sonnet. Give a parity or B2 research unit
+  `lenses: 2` (inputs and data / time and ordering) to widen what it finds.
+- **Severity rubric** (producers and skeptics, `SEVERITY_RUBRIC` in fanout.js): blocker =
+  wrong customer-facing money or legal action, or data loss, in normal operation; high = a
+  wrong outcome is likely in realistic cases; medium = edge cases or a real operational
+  risk; low = minor; info = an observation. Rate by what the code does today:
+  most findings are medium or low (a blind audit found 61% filed too high, often by two
+  levels). The
+  skeptic states its own `verifiedSeverity`; `report.mjs` shows `filed->verified`.
 - `check` always contains `quote` for claim-producing units, so the inspector grounds every
   `{file, line, quote}` before a claim is accepted. A cited file outside `files_read` is a
   capability failure, not a style nit.

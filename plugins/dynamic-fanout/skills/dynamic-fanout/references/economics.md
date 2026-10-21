@@ -283,8 +283,9 @@ these thresholds by 1.5 for that kind, and the card notes it.
 
 0.1.1 learned one `calib.scale` for every agent. 0.1.2 learned one **per role** because
 the validation run's miss ran in opposite directions by role (see "What 0.1.1 got
-wrong"). 0.1.4 adds a fourth role and keys everything by price model. The roles: `work`
-(worker/worker-mcp/worker-ctx/implementer, plus the deep completeness critic), `sweep`
+wrong"). 0.1.4 adds a fourth role and keys everything by price model; 0.1.5 a fifth,
+`implement` (prior 3.5). The roles: `work` (worker/worker-mcp/worker-ctx, plus the deep
+completeness critic), `implement` (implementer themes), `sweep`
 (gap-sweep rounds), `verify` (skeptic batches), `inspect` (inspector calls).
 
 1. At close, `ledger-cost.mjs <transcript-dir> --json` writes the actual dollars **by

@@ -103,6 +103,8 @@ Why: in a benchmark, a solo review cost under 0.15× ultracode but missed exactl
 
 At ≥3 units, read `references/routing.md` and follow it. In short:
 - **Score** each unit on `D A T C V B G` (+ `n` when numbers must tie out).
+- **Recall rule:** for review and research units, score `V` by whether a **missed** issue would be noticed, not whether each finding can be checked. If a miss would go unnoticed, the unit counts as V0 for routing even when every finding is grep-checkable, so it does not go to Sonnet (measured recall: ~60% for an opus·xhigh unit, ~41% for a sonnet·medium one). Give parity and B2 review units `lenses: 2`: the card runs as two copies, one looking at inputs and data, one at time and ordering, because two differently-focused reviewers overlap little; the foreman merges what both find.
+- **Findings and severity:** a unit returns ≤15 findings (a unit stopped at the old cap of 8 missed real issues). Producers and skeptics rate by one rubric: blocker = wrong customer-facing money or legal action, or data loss, in normal operation; high = a wrong outcome is likely in realistic cases; medium = edge cases or a real operational risk; low = minor; info = an observation. Rate by what the code does today; most findings are medium or low (a blind audit found 61% filed too high). The skeptic states its own rating (`verifiedSeverity`), which orders the digest.
 - **Model buys capability, effort buys thoroughness.** Pick the lowest cell that succeeds **first time**. When unsure, use W·medium plus an objective check, and never guess low.
 - **Parity cell:**
   - Applies when V0 ∧ B2 ∧ D≥1, i.e. an error would be invisible *and* consequential.
@@ -111,13 +113,13 @@ At ≥3 units, read `references/routing.md` and follow it. In short:
     - `quote` adds the evidence inspector; `rederive` is required with `n:1`; `none` is parity-only;
     - `V2`/`V3`/`V4` set a per-unit verification **floor**: claim rung = max(`verify.rungs[severity]` + bump, floor), parity ≥ V3 for medium and above, cap V4;
     - `set`, `tests`, `tieout` are labels: you run or check them at close.
-- **Fallback:**
+- **Fallback:** a re-route is reserved at `caps.rerouteRate` 0.2 by default (measured capability failures ~16% of units). When a unit ends unverified (re-route refused, `fb` null or failed), its claims with a quote the inspector resolved are **rescued**: they go to verification one rung higher instead of being dumped as UNVERIFIED (`digest.counts.rescued`). A cited file whose quote resolved counts as read.
   - `fb` is one cell, strictly stronger than `p`, at most S·E_ref, chosen now.
   - On a Fable session only parity units may use a fable cell (`p` or `fb`); everything else stays ≤ W = opus.
   - It is `null` for parity units, superseding units, peripheral B0 units, and when `p` ≥ W·high (strengthen the check instead).
   - Units that carry the answer get a non-null `fb`, unless `p` ≥ W·high.
 - **Context:** `ctx:'omit'` is the default, parity included: put the unit's constraints in the shared **rules capsule** plus `path:line` pointers into the CLAUDE.md sections it may need, which the agent reads on demand with `nl -ba FILE | sed -n 'A,Bp'`. The lean crew cannot use Read: Read attaches every nested CLAUDE.md on a file's path even with `omitClaudeMd` (on a measured run a ~350 KB nested CLAUDE.md grew lean agents from ~8k to ~150k tokens of context). Use `ctx:'keep'` only for a G2 unit whose traps the capsule cannot state, and give it its chain's `ctxTok`.
-- **Verifiers:** a verifier's model must be ≥ every non-parity unit's `p` **and** `fb` model. Declare the rungs (`verify.rungs`) and `verify.cells.V3/V4` (default W·high). `medium` defaults to **V2** (one skeptic at the producer's model·medium; lean skeptics reading through Bash are cheap), and `topK` still bounds how many mediums get one — lower it to V1 (`rungs.medium`) only when mediums are noise for this task. A skeptic's CONFIRMED counts only with its **own support**: a verbatim quote it found (`support`), or for an absence claim the empty search it ran (`support_cmd`); without it the foreman keeps the claim PLAUSIBLE. `high` and `blocker` must stay at **V2 or above** unless `verify.waiver` (≤200 chars) says why; the waiver is echoed in the card and digest.
+- **Verifiers:** a verifier's model must be ≥ every non-parity unit's `p` **and** `fb` model. Declare the rungs (`verify.rungs`) and `verify.cells.V3/V4` (default W·high). `medium` defaults to **V2** (one skeptic at the producer's model·medium; lean skeptics reading through Bash are cheap), and `topK` still bounds how many mediums get one — lower it to V1 (`rungs.medium`) only when mediums are noise for this task. A skeptic's CONFIRMED counts only with its **own support**: a verbatim quote it found (`support`), or for an absence claim the empty search it ran (`support_cmd`); without it the foreman keeps the claim PLAUSIBLE. `high` and `blocker` must stay at **V2 or above** unless `verify.waiver` (≤200 chars) says why; the rails reject a plan without it, and the waiver is echoed in the card and digest. The parity floor (V3) applies only to medium-and-above parity claims: low and info parity claims keep their own rung, so `topK` does not cut mediums for them.
 - **Cells:** use ≤2 cells per stage so agents share a prompt cache. Merge the smallest cell *up*, never down.
 - **`why`:** every card carries one (≤140 chars) naming the feature that decided its route.
 
@@ -134,21 +136,26 @@ If you are unsure whether the plan passes the rails or the money check, launch i
 
 ```
 dynamic-fanout · review · standard · master opus·max · S opus W opus · E_ref xhigh (default)
-ultracode basis: 8 = 5 clusters + 3 dimensions, 4 verifiers · U $40.53 · plan P $9.29 + R $2.69 = 0.30×U (ceiling 0.5×U)
+ultracode basis: 8 = 5 clusters + 3 dimensions, 4 verifiers · U USD 40.53 · plan P USD 9.29 + R USD 2.69 = 0.30×U (ceiling 0.5×U)
 u1      opus·xhigh (parity) → —     omit · V3     30t  recall unverifiable; marks invoices paid
 u2-u4   sonnet·medium → opus·high   omit · quote  18-24t  C1, quotes catch misses
 u6      sonnet·low → sonnet·medium  omit · set    10t  grep set-equality
 verify: blocker/high→V3 (opus·high), medium→V2 (skeptic) · topK 12 · sweep 1
+master: ~5 turns × 180k ctx ≈ USD 0.27 (not in P)
 override: --route u4=opus·high · --ceiling 5 · --solo · or just let it run
 ```
+
+The `master:` line is your own overhead, which the foreman does not price: planned master turns × your current context tokens × the cache-read price of your model. Above ~300k tokens of context, suggest `/compact` or a fresh session before a big run.
+
+Amounts are written as `USD 40.53`, never a dollar sign before a digit: positional argument substitution in skill text rewrites a dollar sign followed by a digit.
 
 The card does not wait for an answer, except:
 - in implement mode;
 - at deep depth with more than 10 agents;
 - when `--confirm` is passed;
-- when the foreman returns `reason: 'pause'` (planned spend above `pauseUsd`, default $10). Show the card, then relaunch with `confirmed: true` once the user agrees.
+- when the foreman returns `reason: 'pause'` (planned spend above `pauseUsd`, default USD 10). Show the card, then relaunch with `confirmed: true` once the user agrees.
 
-If the session is Sonnet at standard or deep depth, add the line `advisory: /model opus improves the plan (~+$0.7)`.
+If the session is Sonnet at standard or deep depth, add the line `advisory: /model opus improves the plan (~+USD 0.7)`.
 
 ## 5. Launch
 
@@ -163,7 +170,7 @@ If the session is Sonnet at standard or deep depth, add the line `advisory: /mod
   - **Requirement:** the lean crew needs read-only Bash in subagents (auto mode, or allow rules for `nl`, `sed -n`, `grep`). If Bash is refused, the agents return `blocked` with `no_access`; re-run those units as `ctx:'keep'` (priced with their chain's `ctxTok`) rather than dropping them.
   - Snap the card's effort **up** to the nearest file and log `snap`, but never above E_ref: if no file fits, take the nearest one at or below E_ref and log `snap-down`. A parity card with no exact file runs with the default agent type and an explicit effort (or in-context).
   - Apply the failure classes yourself (workflow.md table), with the same one-re-route limit.
-- **Implement:** follow `playbooks/implement.md`. Build implement args v1 (themes, worktree, test command, ceiling; the baseline test run comes first) and call `Workflow({ name: 'dynamic-fanout:implement', args })`. Launch `dryRun: true` first, show the priced card (per-theme estimate + the review's, against `caps.ceilingUsd`), and confirm with the user before the real run. The workflow prices itself through the foreman (`kind:'implement'`, `dryRun:true`), runs each theme serially under the ceiling with at most one repair pass on its pre-chosen fallback, then one independent whole-diff review on the `dynamic-fanout:reviewer` agent. Always ask the user before any merge or deploy. For several themes after a review, recommend a **fresh session per theme**: this skill runs at `effort: max`, and one long session re-reads its growing context on every turn.
+- **Implement:** follow `playbooks/implement.md`. Build implement args v1 (themes, worktree, test command, ceiling; the baseline test run comes first) and call `Workflow({ name: 'dynamic-fanout:implement', args })`. Themes price on their own `implement` role (prior 3.5: implementers keep CLAUDE.md, run test suites and take many turns); pass the `CALIB` line from `stats.mjs` as `args.calib` so the learned factors apply. Launch `dryRun: true` first, show the priced card (per-theme estimate + the review's, against `caps.ceilingUsd`), and confirm with the user before the real run. The workflow prices itself through the foreman (`kind:'implement'`, `dryRun:true`), runs each theme serially under the ceiling with at most one repair pass on its pre-chosen fallback, then one independent whole-diff review on the `dynamic-fanout:reviewer` agent. Always ask the user before any merge or deploy. For several themes after a review, recommend a **fresh session per theme**: this skill runs at `effort: max`, and one long session re-reads its growing context on every turn.
 
 ## 6. Review the digest (exceptions only, at most one turn)
 
@@ -198,7 +205,7 @@ node <base>/../../scripts/check-evidence.mjs <output-file> --root <session-cwd> 
 
 - `check-evidence` only ever **downgrades**: a claim whose quote does not exist becomes UNVERIFIED.
 - `ledger-cost` gives the actual dollars per unit and per model (read the `.cost.json`).
-- `stats` records first-pass success per cohort, and with `--ledger` the actual ÷ estimate ratio per role (work, sweep, verify, inspect), keyed by price model, that becomes the next run's `CALIB` `scaleByRole`.
+- `stats` records first-pass success per cohort, and with `--ledger` the actual ÷ estimate ratio per role (work, sweep, verify, inspect, implement), keyed by price model, that becomes the next run's `CALIB` `scaleByRole`.
 - `report` prints the audited claims (with each skeptic's support) for the synthesis; read nothing else from the JSON.
 - Spot-read at most 3 snippets of ≤60 lines, and only to settle a split V4 verdict or a high-impact conflict.
 
@@ -223,7 +230,7 @@ You run at max effort, so spend it on the **two** hard turns, the plan and the s
 - give counts and sizes, and let the foreman do the arithmetic;
 - read the digest only.
 
-**Large master context:** when your own context is already very large, every master turn re-reads it, so each turn costs more than a crew agent. Plan in at most 3 turns (scout, route + launch, close + synthesize) and read results only through `report.mjs`.
+**Large master context:** when your own context is already very large, every master turn re-reads it, so each turn costs more than a crew agent. Measured: master turns at 600-855k tokens of context cost ~USD 0.40 each, and the master was ~43% of a deep run. Above ~300k, `/compact` or start a fresh session before a big run. Plan in at most 3 turns (scout, route + launch, close + synthesize) and read results only through `report.mjs`.
 
 **Don't:**
 - read files a worker will read;

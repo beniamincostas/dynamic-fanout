@@ -51,6 +51,12 @@ envelope the implement playbook budgets against.
     check: 'quote' | 'set' | 'tests' | 'tieout+rederive' | 'V3' | ...,  // '+'-joined
     why: '<=140 chars, names the deciding feature',
     supersedes: 'u3',                    // optional; re-planned unit (fb must be null)
+    lenses: 2,                           // optional, 1 (default) or 2; review/research only,
+                                         //   not with n:1. 2 runs the card as two copies,
+                                         //   <id>A (inputs and data) and <id>B (time and
+                                         //   ordering), each priced, inspected and re-routed
+                                         //   on its own; dedup merges findings both report.
+                                         //   Use for parity and B2 review units (recall rule)
     brief: '<=120 words of pointers: paths, line ranges, questions>',
     schema: { ... }                      // optional JSON Schema for the free `result` field
   }],
@@ -61,7 +67,11 @@ envelope the implement playbook budgets against.
     //  bounded by topK; set rungs.medium 'V1' to skip skeptics for mediums;
     //  V2 = max(producer model, sonnet)·min(medium, refEffort);
     //  default V3 = W·min(high, refEffort); default V4 = V3 (same cell, two lenses)
-    topK: 12, batch: 3, expected: 6
+    topK: 12, batch: 3, expected: 6,
+    waiver: '<=200 chars'
+    //  waiver: required when rungs.high or rungs.blocker is below V2 (else a rails error);
+    //  states why those findings go unchecked, echoed in card.verify.waiver and digest.waiver
+    //  parity claims rise to V3 only at medium and above; low/info keep their rung
     //  topK default: quick 6 / standard 12 / deep 25 (parity claims are never cut by it)
     //  batch default: quick 5, else 3 (claims per V2/V3 skeptic call)
     //  expected default (0.1.2, risk-weighted — see economics.md): highs + mediums, where
@@ -96,6 +106,14 @@ Invariant expressions (`reduce.invariants`): `lhs`/`rhs` are `u1.total` (a numbe
 name from a unit's `numbers`) or `sum(u1.by_code.)` (sum of every number in u1 whose
 name starts with `by_code.`). Evaluated in integer cents after all units finish; a
 failure is reported in `digest.invariants` for the master — it never re-routes.
+
+`lenses` (since 0.1.5): `lenses: 2` on a review or research card replaces it with two
+copies, `<id>A` and `<id>B`, each with one lens line appended to its brief (A: inputs and
+data; B: time and ordering). Each copy is a full unit — priced, inspected, classified and
+re-routed on its own, with `lens`/`lensOf` on its card row. Rails errors: `lenses` other
+than 1 or 2, `lenses: 2` on another kind, or combined with `n: 1`.
+`verify.waiver` (since 0.1.5): a rails error names any plan whose `rungs.high` or
+`rungs.blocker` is below V2 without a waiver (a non-empty string ≤200 chars).
 
 ## Agent types (`typeKey` / `unitAgentType`) and turn caps
 
@@ -380,6 +398,19 @@ follow-up `stage: 'all'` call (fresh work + verify), carrying `carry: digest.mon
 the first run so the combined spend still checks against the shared ceiling. Rescuing
 the verification of claims already produced — without re-running any unit — is a
 separate `stage: 'verify'` call with those `claims`.
+
+**Many claims (deep verify wrapper).** Inline `args` for a verify stage with 50+ claims
+are huge (one measured stage carried 109). Write a small Workflow script instead that
+embeds the args and delegates:
+
+```js
+const ARGS = { /* the full verify-stage args: same args + claims + carry */ }
+return await workflow('dynamic-fanout:fanout', ARGS)
+```
+
+and launch it with `Workflow({ scriptPath: '<scratchpad>/verify.js' })`. Build the file
+with one `node -e` that reads `results.claims` and `digest` from the work-stage output, so
+the claims never pass through your context.
 
 ## Implement mode
 

@@ -86,3 +86,35 @@ test('0.1.5 defaults: findings cap, inspector quotes, mediumsPerUnit and VERDICT
     assert.ok(read(PLUGIN, 'agents', `${f}.md`).includes(line), `${f}.md carries the severity rubric`);
   }
 });
+
+test('SKILL.md has no "$" followed by a digit (positional $N argument substitution mangles it)', () => {
+  assert.doesNotMatch(SKILL, /\$\d/);
+  assert.match(SKILL, /USD 40\.53/);
+});
+
+test('0.1.5 docs: master overhead line, recall rule, lenses, waiver, wrapper pattern, implement role', () => {
+  assert.match(SKILL, /^master: /m, 'run card has a master: line');
+  assert.match(SKILL, /\/compact/);
+  assert.match(SKILL, /43%/);
+  for (const t of [SKILL, read(REFS, 'routing.md')]) {
+    assert.match(t, /[Rr]ecall rule/);
+    assert.match(t, /lenses: 2/);
+    assert.match(t, /verify\.waiver/);
+    assert.match(t, /rerouteRate[^\n]*0\.2/);
+  }
+  const wf = read(REFS, 'workflow.md');
+  assert.match(wf, /`lenses`/);
+  assert.match(wf, /verify\.waiver/);
+  assert.match(wf, /await workflow\('dynamic-fanout:fanout', ARGS\)/);
+  assert.match(wf, /scriptPath/);
+  for (const f of ['review.md', 'research.md']) {
+    const t = read(REFS, 'playbooks', f);
+    assert.match(t, /lenses: 2/, f);
+    assert.match(t, /[Rr]ecall rule/, f);
+    assert.match(t, /most findings are medium or low/, f);
+  }
+  const impl = read(REFS, 'playbooks', 'implement.md');
+  assert.match(impl, /`implement`[^\n]*3\.5/);
+  assert.match(impl, /calib/);
+  assert.match(read(REFS, 'economics.md'), /implement[^\n]*3\.5/);
+});

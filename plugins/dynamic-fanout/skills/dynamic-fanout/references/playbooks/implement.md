@@ -107,6 +107,8 @@ time the cap was too tight. Size the review budget for a whole PR, not for one c
   }],
   review: { enabled: true, cell: { model?, effort } },  // default W·min(high, refEffort)
   caps: { ceilingUsd: 15, pauseUsd: 10 },
+  calib: { pm, scaleByRole },         // optional: the CALIB line from stats.mjs --summary,
+                                      //   passed through to the pricing dry run
   dryRun: false, confirmed: false,
 }
 ```
@@ -115,6 +117,10 @@ time the cap was too tight. Size the review budget for a whole PR, not for one c
   `kind: 'implement'`, `dryRun: true` and one unit per theme (`ctx: 'keep'`,
   `check: 'tests'`), so implement and fan-out estimates come from one price model and the
   same `estUsd`/`turns` per theme.
+- Themes price on their own role, `implement` (prior `scaleByRole.implement` 3.5, since
+  0.1.5): implementers keep CLAUDE.md, run test suites and take many turns, and priced as
+  `work` they came out ~3.5× low. Pass `args.calib` so the factor learned by `stats.mjs`
+  (role `implement`) replaces the prior.
 - Each theme runs on `dynamic-fanout:implementer` (60-turn cap), test-first: write or
   extend a failing test, then make the change that turns it green, then commit.
 - A theme's result: `status: 'ok' | 'partial' | 'blocked'`, `suite: {passed, failed}`,
