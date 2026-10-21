@@ -54,3 +54,13 @@ test('workflow.md and schemas.md document VERDICT support and the new scripts', 
   assert.match(wf, /report\.mjs/);
   assert.match(wf, /claude-md-chain\.mjs/);
 });
+
+test('0.1.5 defaults: rerouteRate 0.2 and the role priors are stated in the docs', () => {
+  const rate = FANOUT.match(/caps\.rerouteRate : ([\d.]+)/)[1];
+  assert.equal(rate, '0.2');
+  assert.match(read(REFS, 'routing.md'), new RegExp('instead of ' + rate.replace('.', '\\.')));
+  const priors = FANOUT.match(/\n  scaleByRole: (\{[^}]*\})/)[1];
+  assert.equal(priors, '{ work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5 }');
+  assert.match(read(REFS, 'economics.md'), /`\{work: 1\.0, verify: 0\.3, inspect: 0\.3, sweep: 2\.0, implement: 3\.5\}`/);
+  assert.match(read(REFS, 'economics.md'), /`rerouteRate`[^\n]*0\.2/);
+});

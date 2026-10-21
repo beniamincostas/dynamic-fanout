@@ -37,7 +37,7 @@ const DEFAULT_TOPK = { quick: 6, standard: 12, deep: 25 }
 const DEFAULT_ROUNDS = { quick: 0, standard: 1, deep: 2 }
 const MAX_INSPECT_QUOTES = 40
 
-// Bump PRICE_MODEL whenever estUsd's structure or DEFAULT_CALIB's defaults change: learned
+// Bump PRICE_MODEL whenever estUsd's structure changes (new priors alone do not need it): learned
 // factors (args.calib.scale / scaleByRole, from stats.mjs) only hold for the model they were
 // learned under, so calibrate() ignores factors that carry another (or no) price model.
 const PRICE_MODEL = 3
@@ -71,10 +71,14 @@ const DEFAULT_CALIB = {
   // Skeptics reading through Bash read 4-10k tokens; the gap sweep re-reads a slice of scope.
   verifierInFrac: 0.25,
   sweepInFrac: 0.25,
-  // Per-role multipliers. The leak-free fit of the measured run at these settings was work
-  // 0.41, verify 0.19, inspect 0.25, sweep 0.72; the priors sit above the fit on purpose,
-  // because under-estimating exhausts the work pool and starves verification.
-  scaleByRole: { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 },
+  // Per-role multipliers, learned under price model 3 over 9 runs: work 0.6->1.04->0.81,
+  // verify 0.27-0.30, inspect 0.30-0.39, sweep 0.79->3.82 (noisy). The priors sit at or above
+  // the fit on purpose, because under-estimating exhausts the work pool and starves
+  // verification. Implementers keep CLAUDE.md, run test suites and take many turns: priced
+  // as work they came out ~3.5x low (theme estimates 0.5-0.8 vs actual 1.7-3.4), so they are
+  // their own role. estUsd's structure is unchanged, so PRICE_MODEL stays and learned factors
+  // stay valid.
+  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5 },
   // Global extra multiplier on top of scaleByRole (only honoured from the same price model).
   scale: 1,
   // Expected findings per unit, for sizing the verification reserve. Measured: 7 high +
@@ -207,7 +211,7 @@ function typeKey(u) {
   return u.role === 'implement' ? 'implementer' : u.ctx === 'keep' ? 'workerCtx' : u.v && u.v.T === 2 ? 'workerMcp' : 'worker'
 }
 const LEAN_TYPES = ['worker', 'skeptic', 'inspector']
-const ROLE_OF = { implementer: 'work', worker: 'work', workerMcp: 'work', workerCtx: 'work', skeptic: 'verify', inspector: 'inspect' }
+const ROLE_OF = { implementer: 'implement', worker: 'work', workerMcp: 'work', workerCtx: 'work', skeptic: 'verify', inspector: 'inspect' }
 // role overrides the agent type's role: the gap sweep runs on a worker but is priced (and
 // calibrated) as its own role 'sweep'.
 function agentOpts(key, K, role) {
@@ -236,7 +240,7 @@ function expectedVerifiers(nUnits, depth, vcfg, rungs, K) {
 // A claim verified at V3+ because of its severity (blocker/high) or because it is a parity
 // claim is never dropped by topK; topK only bounds the remaining V2+ claims.
 function topKExempt(c, rungs) {
-  if (c.parity) return true
+  if (c.parity && sevRank(c.severity) >= sevRank('medium')) return true
   if (sevRank(c.severity) < sevRank('high')) return false
   return RUNGS.indexOf((rungs && rungs[c.severity]) || DEFAULT_RUNGS[c.severity]) >= 3
 }
@@ -350,6 +354,12 @@ function validate(a) {
   const rungs = { ...DEFAULT_RUNGS, ...(vcfg.rungs || {}) }
   for (const [sev, r] of Object.entries(rungs)) if (!RUNGS.includes(r)) errors.push(`verify: rung for ${sev} must be one of ${RUNGS.join('|')} (got ${JSON.stringify(r)})`)
   out.rungs = rungs
+  // A high/blocker finding below V2 is never independently checked; a run may only skip that
+  // with a stated reason, echoed in the card and digest.
+  const waiver = typeof vcfg.waiver === 'string' ? vcfg.waiver.trim() : ''
+  if (vcfg.waiver !== undefined && (!waiver || vcfg.waiver.length > 200)) errors.push('verify: waiver must be a non-empty string of at most 200 characters')
+  else if (['high', 'blocker'].some(sev => RUNGS.indexOf(rungs[sev]) < 2) && !waiver) errors.push('verify: high/blocker findings need at least V2; set verify.waiver to run without')
+  out.waiver = waiver || null
   const highE = er(E) >= 0 ? minEffort('high', E) : 'high'
   out.V3 = cellOf(cells.V3 || { model: W, effort: highE }, S)
   out.V4 = cellOf(cells.V4 || cells.V3 || { model: W, effort: highE }, S)
@@ -433,7 +443,8 @@ function price(a, V, K) {
   plannedOut += expected * outTok(V.V3, K, turnsFor(V.V3, vIn, K, skepO.cap)) + V.rounds * outTok(V.sweepCell, K, turnsFor(V.sweepCell, sweepIn, K, sweepO.cap))
     + (a.depth === 'deep' ? outTok(V.criticCell, K, turnsFor(V.criticCell, vIn, K, workO.cap)) : 0)
   plannedAgents += expected + V.rounds + (a.depth === 'deep' ? 1 : 0)
-  const rate = typeof caps.rerouteRate === 'number' ? caps.rerouteRate : 0.1
+  // Default 0.2: 7 capability failures in 44 units (~16%) across 7 runs.
+  const rate = typeof caps.rerouteRate === 'number' ? caps.rerouteRate : 0.2
   const capPct = typeof caps.reserveCapPct === 'number' ? caps.reserveCapPct : 20
   // The floor (one full repair) wins over the cap: a reserve that cannot pay for a
   // single repair is a promise the foreman could not keep.
@@ -486,7 +497,7 @@ function buildCard(a, V, M, K) {
       rd: u.rdCell ? cellKey(u.rdCell) : null, ctx: u.ctx, check: u.check, why: u.why, parity: u.parity,
       estUsd: u.estUsd, turns: u.turns, override: u.override || null,
     })),
-    verify: { rungs: V.rungs, V3: cellKey(V.V3), V4: cellKey(V.V4), expected: M.expected },
+    verify: { rungs: V.rungs, V3: cellKey(V.V3), V4: cellKey(V.V4), expected: M.expected, waiver: V.waiver || null },
     sweep: { rounds: V.rounds, cell: cellKey(V.sweepCell) },
     money: {
       U: round2(M.U), P: round2(M.P), R: round2(M.R), C: round2(M.C), ratio: M.U > 0 ? round2((M.P + M.R) / M.U) : null,
@@ -538,13 +549,19 @@ function classify(u, res, insp, st) {
   const rated = insp && insp.total > 0 && typeof insp.rate === 'number'
   if (rated && insp.rate < 0.7) reasons.push(`only ${Math.round(insp.rate * 100)}% of quotes resolve`)
   if (rated && insp.rate < 0.5) mode = 'redo'
-  const notRead = citedFiles(res).filter(f => !(res.files_read || []).some(r => pathMatch(f, r)))
-  if (notRead.length) reasons.push(`cited but not read: ${notRead.join(', ')}`)
+  // Agents that read through Bash cite files they grepped: a cited file with a quote the
+  // inspector resolved counts as read. Without an inspector (none planned, skipped or failed)
+  // a cited-but-unlisted file is only a soft signal.
+  const inspected = !!insp && typeof insp.resolved === 'number'
+  const resolvedFiles = (insp && insp.resolvedFiles) || []
+  const notRead = citedFiles(res).filter(f => !(res.files_read || []).some(r => pathMatch(f, r)) && !resolvedFiles.some(r => pathMatch(f, r)))
+  if (notRead.length && inspected) reasons.push(`cited but not read: ${notRead.join(', ')}`)
   if (u.v && u.v.B === 2 && (res.findings || []).some(f => !(f.evidence || []).length)) reasons.push('B2 finding without evidence')
   if (st.tieoutFailed) { reasons.push('tie-out mismatch between derivations'); mode = 'rederive' }
   const lowConf = typeof res.confidence === 'number' && res.confidence < 0.5
-  const soft = (rated && insp.rate >= 0.7 && insp.rate < 0.9) || (Array.isArray(res.assumptions) && res.assumptions.length >= 3)
-  if (lowConf && soft) reasons.push(`confidence ${res.confidence} with a soft signal`)
+  const softNotRead = notRead.length > 0 && !inspected
+  const soft = (rated && insp.rate >= 0.7 && insp.rate < 0.9) || (Array.isArray(res.assumptions) && res.assumptions.length >= 3) || softNotRead
+  if (lowConf && soft) reasons.push(`confidence ${res.confidence} with a soft signal${softNotRead ? ` (cited but not read: ${notRead.join(', ')})` : ''}`)
   if (reasons.length) return { cls: 'capability', reasons, mode }
   const uncovered = st.capacityUsed ? missing.concat(partial ? remaining : []) : []
   return { cls: 'ok', reasons: [], verifyBump: lowConf ? 1 : 0, uncovered }
@@ -715,7 +732,8 @@ function dedupClaims(claims, keys) {
 }
 
 // Rung = verify.rungs[severity] + bump, raised to the unit's own floor (a V2/V3/V4 token
-// in its check) and to V3 for parity claims, capped at V4.
+// in its check) and to V3 for parity claims of severity medium and above, capped at V4.
+// Low and info parity claims keep their own rung (raising them let topK cut mediums).
 const floorOf = checks => Math.max(-1, ...(checks || []).map(t => RUNGS.indexOf(t.toUpperCase())).filter(i => i >= 2))
 
 function rungFor(c, rungs) {
@@ -723,7 +741,7 @@ function rungFor(c, rungs) {
   if (r < 0) r = 0
   r += c.bump || 0
   if (Number.isInteger(c.floor) && c.floor >= 0) r = Math.max(r, c.floor)
-  if (c.parity) r = Math.max(r, 3)
+  if (c.parity && sevRank(c.severity) >= sevRank('medium')) r = Math.max(r, 3)
   return RUNGS[Math.min(4, Math.max(0, r))]
 }
 
@@ -787,7 +805,11 @@ function mergeInspections(a, b) {
   if (!b) return a
   const total = a.total + b.total
   const resolved = a.resolved === null || b.resolved === null ? null : a.resolved + b.resolved
-  return { total, resolved, rate: resolved === null ? null : resolved / total, skipped: a.skipped || b.skipped || null }
+  return {
+    total, resolved, rate: resolved === null ? null : resolved / total, skipped: a.skipped || b.skipped || null,
+    resolvedFiles: [...new Set([...(a.resolvedFiles || []), ...(b.resolvedFiles || [])])],
+    resolvedKeys: [...(a.resolvedKeys || []), ...(b.resolvedKeys || [])],
+  }
 }
 
 const EVIDENCE = {
@@ -892,7 +914,7 @@ const RULES = [
   'Rules for this unit:',
   '- Read-only: do not edit, write, commit or push anything. Never print credentials or .env values.',
   '- Every finding needs evidence: file path, line number, and a quote of at most 160 characters copied verbatim from that line.',
-  '- files_read must list every file you actually opened.',
+  '- files_read must list every file you read lines from, including through grep or sed.',
   '- If you cannot finish, set status "partial" and list what is left in remaining. If the brief is unclear, you lack access, or the work is outside the scope, set status "blocked" with blocked_reason ambiguous_brief | no_access | out_of_scope instead of guessing. Use too_hard or contradictory_evidence when that is the honest reason.',
   '- confidence is your honest probability (0-1) that the findings are correct and complete. Being unsure is fine; overclaiming is not.',
   '- Compact output: at most 8 findings, summary at most 300 characters. Your final answer is the structured output only.',
@@ -993,7 +1015,7 @@ const money = {
 const out0 = budget.spent()
 const maxOut = A.caps && Number(A.caps.maxOutputTokens) > 0 ? Number(A.caps.maxOutputTokens) : Math.round(1.5 * M.plannedOut)
 const b2Pending = new Set(V.units.filter(u => u.fbCell && u.v && u.v.B === 2).map(u => u.id))
-const ledger = { units: [], verifiers: [], inspectors: [], sweeps: [], cells: {}, reroutes: 0, promotions: [] }
+const ledger = { units: [], verifiers: [], inspectors: [], sweeps: [], cells: {}, reroutes: 0, promotions: [], rescued: 0 }
 const unitResults = {}
 let claims = []
 // Union of every unit's scope files, for canonicalizing evidence that isn't tied to one unit
@@ -1089,10 +1111,16 @@ async function inspect(u, res, n) {
   const r = await callOnce(prompt, V.inspCell, { label: `inspect:${u.id}·${cellKey(V.inspCell)}`, phase: 'Work', schema: INSPECT, agentType: AT.inspector })
   if (!r) { ledger.inspectors.push({ tag, unit: u.id, quotes: batch.length, resolved: null, estUsd: est, skipped: 'inspector returned nothing' }); return { total: batch.length, resolved: null, rate: null, skipped: 'inspector failed' } }
   const found = new Set((r.checks || []).filter(c => c && c.found).map(c => c.ref))
-  const resolved = batch.filter(b => found.has(b.ref)).length
+  const hits = batch.filter(b => found.has(b.ref))
+  const resolved = hits.length
   ledger.inspectors.push({ tag, unit: u.id, quotes: batch.length, resolved, estUsd: est })
   if (items.length > batch.length) warnings.push(`inspect ${u.id}: ${items.length - batch.length} quote(s) beyond ${MAX_INSPECT_QUOTES} left to check-evidence.mjs`)
-  return { total: batch.length, resolved, rate: resolved / batch.length }
+  // resolvedFiles: cited files with >= 1 resolved quote (they count as read); resolvedKeys:
+  // file|quote of each resolved item, so a failed unit's grounded claims can be rescued.
+  return {
+    total: batch.length, resolved, rate: resolved / batch.length,
+    resolvedFiles: [...new Set(hits.map(b => b.file))], resolvedKeys: hits.map(b => `${b.file}|${b.quote}`),
+  }
 }
 
 const promoted = new Set()
@@ -1111,7 +1139,10 @@ function noteCapFail(u) {
   }
 }
 
-function finishUnit(L, u, outcome, reason, res, c, producer) {
+// rescue: the inspection of res when the unit ends unverified because its capability re-route
+// was refused, fb is null or fb failed. Claims with a resolved quote then go to verification
+// one rung higher instead of being dumped as UNVERIFIED; the unit's outcome stays unverified.
+function finishUnit(L, u, outcome, reason, res, c, producer, rescue) {
   L.outcome = outcome
   L.reason = reason || null
   L.verifyBump = (c && c.verifyBump ? 1 : 0) + (outcome === 'ok-rerouted' ? 1 : 0)
@@ -1124,14 +1155,17 @@ function finishUnit(L, u, outcome, reason, res, c, producer) {
     result: res.result || null, assumptions: res.assumptions || [], confidence: res.confidence,
     uncovered: (c && c.uncovered) || [],
   } : null
+  const keys = new Set(outcome === 'unverified' && rescue ? rescue.resolvedKeys || [] : [])
+  const grounded = f => (f.evidence || []).some(e => e && keys.has(`${toScope(e.file, u.scope.files)}|${e.quote}`))
   if (res) {
-    ;(res.findings || []).forEach((f, i) => claims.push({
+    ;(res.findings || []).forEach((f, i) => { const saved = keys.size > 0 && grounded(f); if (saved) ledger.rescued++; claims.push({
       cid: `${u.id}.f${i + 1}`, unit: u.id, severity: SEVERITIES.includes(f.severity) ? f.severity : 'medium',
       title: f.title, claim: f.claim, evidence: scopeEvidence(f.evidence, u.scope.files),
-      parity: u.parity, producer: producer || u.cell, bump: L.verifyBump, blast: u.v ? u.v.B : 0, floor: floorOf(u.checks),
-      verdict: outcome === 'unverified' || outcome === 'brief' ? 'UNVERIFIED' : null,
-      reason: outcome === 'unverified' || outcome === 'brief' ? `unit ${outcome}: ${reason || ''}`.trim() : null,
-    }))
+      parity: u.parity, producer: producer || u.cell, bump: L.verifyBump + (saved ? 1 : 0), blast: u.v ? u.v.B : 0, floor: floorOf(u.checks),
+      verdict: !saved && (outcome === 'unverified' || outcome === 'brief') ? 'UNVERIFIED' : null,
+      reason: saved ? `producer unit failed: ${reason || ''}`.trim() : outcome === 'unverified' || outcome === 'brief' ? `unit ${outcome}: ${reason || ''}`.trim() : null,
+      rescued: saved ? `producer unit failed: ${reason || ''}`.trim() : null,
+    }) })
   }
   return L
 }
@@ -1209,15 +1243,15 @@ async function runUnit(u) {
         res.numbersStatus = 'UNVERIFIED'
         if (!tie.ok) res.numbersConflict = { primary: res.numbers, rederived: rd ? rd.numbers : null, fallback: null }
       }
-      return finishUnit(L, u, 'unverified', `exhausted (${st.fbUsed ? 'fallback already used' : 'fb null'}): ${c.reasons.join('; ')}`, res, c, producer)
+      return finishUnit(L, u, 'unverified', `exhausted (${st.fbUsed ? 'fallback already used' : 'fb null'}): ${c.reasons.join('; ')}`, res, c, producer, insp)
     }
     st.fbUsed = true
     r = await run(u.fbCell, 'reroute', c.mode, { reasons: c.reasons, prev: res, rdNumbers: rd && rd.numbers })
-    if (r.refused) return finishUnit(L, u, 'unverified', `${r.refused} (needed a re-route: ${c.reasons.join('; ')})`, res, c, producer)
+    if (r.refused) return finishUnit(L, u, 'unverified', `${r.refused} (needed a re-route: ${c.reasons.join('; ')})`, res, c, producer, insp)
     ledger.reroutes++
     log(`${u.id}: re-routed once to ${cellKey(u.fbCell)} (${c.mode}): ${c.reasons.join('; ')}`)
     const fixed = r.res
-    if (!fixed) return finishUnit(L, u, 'unverified', 're-route returned no result', res, c, producer)
+    if (!fixed) return finishUnit(L, u, 'unverified', 're-route returned no result', res, c, producer, insp)
     producer = u.fbCell
     const insp2 = await inspect(u, fixed, attempt)
     let tie2 = null
@@ -1229,7 +1263,7 @@ async function runUnit(u) {
       if (!tie2.ok) fixed.numbersConflict = { primary: res.numbers, rederived: rd ? rd.numbers : null, fallback: fixed.numbers }
     }
     const c2 = classify(u, fixed, insp2, { capacityUsed: true, tieoutFailed: !!(tie2 && !tie2.ok) })
-    if (c2.cls !== 'ok') return finishUnit(L, u, 'unverified', `after fallback: ${(c2.reasons || []).join('; ') || c2.cls}`, fixed, c2, producer)
+    if (c2.cls !== 'ok') return finishUnit(L, u, 'unverified', `after fallback: ${(c2.reasons || []).join('; ') || c2.cls}`, fixed, c2, producer, insp2)
     return finishUnit(L, u, 'ok-rerouted', null, fixed, c2, producer)
   }
   if (u.n && tie) res.numbersStatus = tie.ok ? 'CONFIRMED' : 'UNVERIFIED'
@@ -1410,7 +1444,9 @@ const digest = {
     units: ledger.units.length, ok: count('ok'), okRerouted: count('ok-rerouted'), okPromoted: count('ok-promoted'),
     brief: count('brief'), unverified: count('unverified'), claims: claims.length, confirmed: vcount('CONFIRMED'),
     plausible: vcount('PLAUSIBLE'), refuted: vcount('REFUTED'), unverifiedClaims: vcount('UNVERIFIED'), pending: vcount('PENDING'),
+    rescued: claims.filter(c => c.rescued).length,
   },
+  waiver: V.waiver || null,
   exceptions: ledger.units.filter(l => l.outcome !== 'ok').map(l => ({
     id: l.id, cls: l.outcome, reason: l.reason, cell: (l.attempts[l.attempts.length - 1] || {}).cell || l.p, why: l.why,
   })),
@@ -1438,7 +1474,7 @@ return {
       cid: c.cid, unit: c.unit, severity: c.severity, verifiedSeverity: c.verifiedSeverity || null, title: c.title, claim: c.claim,
       evidence: c.evidence, rung: c.rung || null, verdict: c.verdict, verdictBy: c.verdictBy || null, reason: c.reason || null,
       counter_quote: c.counter_quote || null, support: c.support || null, support_cmd: c.support_cmd || null, parity: !!c.parity, producer: c.producer || null, bump: c.bump || 0,
-      blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, mergedFrom: c.mergedFrom || null, merged: c.merged || null,
+      blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, rescued: c.rescued || null, mergedFrom: c.mergedFrom || null, merged: c.merged || null,
     })),
   },
 }

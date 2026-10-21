@@ -85,6 +85,8 @@ function priceArgs(a) {
       ctx: 'keep', p: t.p, fb: t.fb || null, check: 'tests',
     })),
     caps: { ceilingUsd: a.caps.ceilingUsd },
+    // learned pricing factors (stats.mjs CALIB line), so themes price with scaleByRole.implement
+    ...(a.calib && typeof a.calib === 'object' ? { calib: a.calib } : {}),
   }
 }
 

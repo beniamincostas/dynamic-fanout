@@ -109,7 +109,7 @@ At ≥3 units, read `references/routing.md` and follow it. In short:
   - The unit runs on ultracode's cell: S·E_ref, `fb:null`, claims at V3. The rail checks only the cell and `fb`; `ctx` stays `omit` (see Context).
   - Every other unit must name the check that catches its mistakes. What each `check` token does in the foreman:
     - `quote` adds the evidence inspector; `rederive` is required with `n:1`; `none` is parity-only;
-    - `V2`/`V3`/`V4` set a per-unit verification **floor**: claim rung = max(`verify.rungs[severity]` + bump, floor), parity ≥ V3, cap V4;
+    - `V2`/`V3`/`V4` set a per-unit verification **floor**: claim rung = max(`verify.rungs[severity]` + bump, floor), parity ≥ V3 for medium and above, cap V4;
     - `set`, `tests`, `tieout` are labels: you run or check them at close.
 - **Fallback:**
   - `fb` is one cell, strictly stronger than `p`, at most S·E_ref, chosen now.
@@ -117,7 +117,7 @@ At ≥3 units, read `references/routing.md` and follow it. In short:
   - It is `null` for parity units, superseding units, peripheral B0 units, and when `p` ≥ W·high (strengthen the check instead).
   - Units that carry the answer get a non-null `fb`, unless `p` ≥ W·high.
 - **Context:** `ctx:'omit'` is the default, parity included: put the unit's constraints in the shared **rules capsule** plus `path:line` pointers into the CLAUDE.md sections it may need, which the agent reads on demand with `nl -ba FILE | sed -n 'A,Bp'`. The lean crew cannot use Read: Read attaches every nested CLAUDE.md on a file's path even with `omitClaudeMd` (on a measured run a ~350 KB nested CLAUDE.md grew lean agents from ~8k to ~150k tokens of context). Use `ctx:'keep'` only for a G2 unit whose traps the capsule cannot state, and give it its chain's `ctxTok`.
-- **Verifiers:** a verifier's model must be ≥ every non-parity unit's `p` **and** `fb` model. Declare the rungs (`verify.rungs`) and `verify.cells.V3/V4` (default W·high). `medium` defaults to **V2** (one skeptic at the producer's model·medium; lean skeptics reading through Bash are cheap), and `topK` still bounds how many mediums get one — lower it to V1 (`rungs.medium`) only when mediums are noise for this task. A skeptic's CONFIRMED counts only with its **own support**: a verbatim quote it found (`support`), or for an absence claim the empty search it ran (`support_cmd`); without it the foreman keeps the claim PLAUSIBLE.
+- **Verifiers:** a verifier's model must be ≥ every non-parity unit's `p` **and** `fb` model. Declare the rungs (`verify.rungs`) and `verify.cells.V3/V4` (default W·high). `medium` defaults to **V2** (one skeptic at the producer's model·medium; lean skeptics reading through Bash are cheap), and `topK` still bounds how many mediums get one — lower it to V1 (`rungs.medium`) only when mediums are noise for this task. A skeptic's CONFIRMED counts only with its **own support**: a verbatim quote it found (`support`), or for an absence claim the empty search it ran (`support_cmd`); without it the foreman keeps the claim PLAUSIBLE. `high` and `blocker` must stay at **V2 or above** unless `verify.waiver` (≤200 chars) says why; the waiver is echoed in the card and digest.
 - **Cells:** use ≤2 cells per stage so agents share a prompt cache. Merge the smallest cell *up*, never down.
 - **`why`:** every card carries one (≤140 chars) naming the feature that decided its route.
 

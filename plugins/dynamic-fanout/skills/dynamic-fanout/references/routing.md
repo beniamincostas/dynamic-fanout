@@ -301,7 +301,7 @@ routes on them, and only `stats.mjs update` writes the file.
 | Rule | Condition | Effect on your cards |
 |---|---|---|
 | **Promote** | matching cohort n≥4, firstPassOk <80% | start at the cohort's usual `fb`; pick a new stronger `fb` or `null` (rails still apply) |
-| **Reserve prior** | role cohorts with n≥4 | set `caps.rerouteRate` to the observed rate instead of 0.1 |
+| **Reserve prior** | role cohorts with n≥4 | set `caps.rerouteRate` to the observed rate instead of 0.2 |
 | **Confidence** | conf-hi ok rate not ≥10 points above conf-lo | treat self-confidence as noise, not even a sort key; say so on the card |
 | **Envelope** | the last run of this kind committed (estimated) >0.6·U | solo thresholds ×1.5 for this kind; note it on the card |
 

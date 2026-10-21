@@ -338,3 +338,11 @@ test('a suite below the baseline count is flagged', async () => {
 test('harness: runWorkflow only loads files under workflows/', async () => {
   await assert.rejects(() => runWorkflow('../tests/harness.mjs', {}, () => null), /expected a file name under workflows/)
 })
+
+test('0.1.5 pricing: args.calib passes through to the foreman pricing call', async () => {
+  const calib = { pm: 3, scaleByRole: { implement: 3.1 } }
+  const { workflowCalls } = await run(baseArgs({ calib, dryRun: true }))
+  assert.deepEqual(workflowCalls[0].args.calib, calib)
+  const plain = await run(baseArgs({ dryRun: true }))
+  assert.ok(!('calib' in plain.workflowCalls[0].args), 'no calib key without args.calib')
+})
