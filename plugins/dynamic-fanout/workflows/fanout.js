@@ -20,6 +20,11 @@ export const meta = {
 const MODELS = ['haiku', 'sonnet', 'opus', 'fable']
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const KINDS = ['research', 'review', 'data', 'implement']
+// The two lenses of a `lenses: 2` card (see validate): copy A looks at the data, copy B at time.
+const LENSES = {
+  A: 'Lens: inputs and data: unusual, missing, duplicated or malformed values, None/empty/zero, boundaries, encodings, rounding.',
+  B: 'Lens: time and ordering: re-runs and replay, partial failure, the order of side effects, dates, clocks and business days, concurrency.',
+}
 const DEPTHS = ['quick', 'standard', 'deep']
 const STAGES = ['all', 'work', 'verify']
 const SEVERITIES = ['info', 'low', 'medium', 'high', 'blocker']
@@ -345,6 +350,26 @@ function validate(a) {
     if (!u.checks.length) errors.push(`check ${id}: check missing — name the objective check that catches this unit's failure`)
     else if (u.checks.includes('none') && !u.parity) errors.push(`check ${id}: check none is only allowed in the parity cell`)
     if (u.n && !u.checks.includes('rederive')) errors.push(`check ${id}: n=1 needs a planned re-derivation — add rederive to check`)
+
+    // Two-lens split: a high-risk review/research card runs as two copies on the same card, each
+    // with one lens, because two differently-focused reviewers overlap little. Both copies are
+    // priced and inspected, classified and re-routed on their own; dedupClaims merges a finding
+    // both report (sameIssue across producers) and keeps the distinct ones.
+    if (u.lenses !== undefined && u.lenses !== 1) {
+      if (u.lenses !== 2) errors.push(`card ${id}: lenses must be 1 or 2 (got ${JSON.stringify(u.lenses)})`)
+      else {
+        if (!['review', 'research'].includes(a.kind)) errors.push(`card ${id}: lenses 2 is only for kind review or research`)
+        if (u.n) errors.push(`card ${id}: lenses 2 cannot be combined with n:1 — a re-derived number has no second lens`)
+        if (!['review', 'research'].includes(a.kind) || u.n) continue
+        out.units.pop()
+        for (const [k, line] of Object.entries(LENSES)) {
+          const lid = id + k
+          if (seen.has(lid)) errors.push(`args: duplicate unit id ${lid} (lens copy of ${id})`)
+          seen.add(lid)
+          out.units.push({ ...JSON.parse(JSON.stringify(u)), id: lid, lens: k, lensOf: id, brief: `${u.brief}\n${line}` })
+        }
+      }
+    }
   }
   if (upUnits.size > 1) errors.push(`tier: at most 1 allow-up unit per run (got ${upUnits.size}: ${[...upUnits].join(', ')})`)
 
@@ -496,6 +521,7 @@ function buildCard(a, V, M, K) {
       id: u.id, role: u.role, vec: u.vec, cell: cellKey(u.cell), fb: u.fbCell ? cellKey(u.fbCell) : null,
       rd: u.rdCell ? cellKey(u.rdCell) : null, ctx: u.ctx, check: u.check, why: u.why, parity: u.parity,
       estUsd: u.estUsd, turns: u.turns, override: u.override || null,
+      ...(u.lensOf ? { lens: u.lens, lensOf: u.lensOf, note: `lens ${u.lens} of ${u.lensOf} (two-lens split)` } : {}),
     })),
     verify: { rungs: V.rungs, V3: cellKey(V.V3), V4: cellKey(V.V4), expected: M.expected, waiver: V.waiver || null },
     sweep: { rounds: V.rounds, cell: cellKey(V.sweepCell) },
@@ -1189,6 +1215,7 @@ async function runUnit(u) {
   const L = {
     id: u.id, role: u.role, vec: u.vec, parity: u.parity, p: cellKey(u.cell), fb: u.fbCell ? cellKey(u.fbCell) : null,
     ctx: u.ctx, check: u.check, why: u.why, override: u.override || null, outcome: null, reason: null, verifyBump: 0, attempts: [],
+    ...(u.lensOf ? { lens: u.lens, lensOf: u.lensOf } : {}),
   }
   ledger.units.push(L)
   const at = unitAgentType(u)
