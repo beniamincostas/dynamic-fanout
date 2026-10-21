@@ -1052,6 +1052,52 @@ test('0.1.5: rescue also covers a refused re-route', async () => {
   assert.equal(c.rung, 'V4')
 })
 
+test('0.1.5: a rescued low claim still gets a skeptic (floor V2), and keeps its rescue note', async () => {
+  const a = baseArgs()
+  a.units[0].fb = null
+  const { res } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], status: 'blocked', blocked_reason: 'too_hard', findings: [finding('src/a.py', 1, 'low', 'grounded low')] }),
+  }))
+  const c = res.results.claims.find(x => x.cid === 'u1.f1')
+  assert.equal(c.rung, 'V2', 'low V0 + rescue bump would be V1; the rescue floor lifts it to V2')
+  assert.equal(c.verdict, 'CONFIRMED', 'judged by a skeptic, not marked PLAUSIBLE on quotes alone')
+  assert.match(c.rescued, /^producer unit failed: exhausted \(fb null\)/)
+})
+
+test('0.1.5: rescue covers a re-route that returned no result', async () => {
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], status: 'blocked', blocked_reason: 'too_hard', findings: [finding('src/a.py', 1, 'medium', 'grounded')] }),
+  })
+  const { res } = await runFanout(baseArgs(), (p, o, n) => (/^u1:[2-9]$/.test(tagOf(p)) ? null : base(p, o, n)))
+  const L = res.ledger.units.find(l => l.id === 'u1')
+  assert.equal(L.outcome, 'unverified')
+  assert.match(L.reason, /re-route returned no result/)
+  const c = res.results.claims.find(x => x.cid === 'u1.f1')
+  assert.match(c.rescued, /^producer unit failed: re-route returned no result/)
+  assert.notEqual(c.verdict, 'UNVERIFIED')
+})
+
+test('0.1.5: rescue covers a fallback that failed again, grounded on the fallback\'s own inspection', async () => {
+  const fail = title => okUnit({ files_read: ['src/a.py'], status: 'blocked', blocked_reason: 'too_hard', findings: [finding('src/a.py', 5, 'medium', title)] })
+  const { res } = await runFanout(baseArgs(), responder({ 'u1:1': fail('first try'), 'u1:2': fail('second try') }))
+  const L = res.ledger.units.find(l => l.id === 'u1')
+  assert.equal(L.outcome, 'unverified')
+  assert.match(L.reason, /^after fallback/)
+  const c = res.results.claims.find(x => x.unit === 'u1')
+  assert.equal(c.title, 'second try', 'the claims come from the fallback attempt')
+  assert.match(c.rescued, /^producer unit failed: after fallback/)
+  assert.notEqual(c.verdict, 'UNVERIFIED')
+})
+
+test('0.1.5 rail: lenses 2 is refused on an allow-up card (it would run two above-session agents)', async () => {
+  const a = baseArgs()
+  a.session.allowUp = true
+  a.units[0].p = { model: 'fable', effort: 'medium' }
+  a.units[0].fb = null
+  a.units[0].lenses = 2
+  await rejects(a, /^card u1: lenses 2 cannot be combined with an above-session \(allow-up\) cell/)
+})
+
 test('0.1.5 rail: high/blocker rungs need V2 unless verify.waiver says why', async () => {
   const a = baseArgs()
   a.verify = { ...a.verify, rungs: { blocker: 'V0', high: 'V0', medium: 'V0', low: 'V0', info: 'V0' } }

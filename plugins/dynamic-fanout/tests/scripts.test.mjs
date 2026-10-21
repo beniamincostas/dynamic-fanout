@@ -535,7 +535,8 @@ describe('stats', () => {
     test('0.1.5: implement themes are their own role, mapped from the card units', () => {
       const result = { card: { calib: { pm: 3 }, units: [{ id: 't1', role: 'implement', estUsd: 0.5 }, { id: 't2', role: 'implement', estUsd: 0.7 }] } };
       assert.deepEqual(st.estimatedUsdByRole(result), { work: 0, verify: 0, inspect: 0, sweep: 0, implement: 1.2 });
-      const ledgerJson = { byKind: { work: { usd: 5 } }, byUnit: { t1: { usd: 1.7 }, t2: { usd: 2.5 } } };
+      // byUnit also holds each unit's inspector; the implement actual reads the implementers' own tags.
+      const ledgerJson = { byKind: { work: { usd: 5 }, inspector: { usd: 0.3 } }, byTag: { 'df:t1:1': { usd: 1.2 }, 'df:t1:2': { usd: 0.5 }, 'df:t2:1': { usd: 2.5 }, 'df:i:t1:1': { usd: 0.3 } }, byUnit: { t1: { usd: 2.0 }, t2: { usd: 2.5 } } };
       const act = st.actualUsdByRole(ledgerJson, result);
       assert.equal(act.implement, 4.2);
       assert.ok(Math.abs(act.work - 0.8) < 1e-9);

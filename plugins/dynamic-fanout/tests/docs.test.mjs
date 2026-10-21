@@ -63,6 +63,8 @@ test('0.1.5 defaults: rerouteRate 0.2 and the role priors are stated in the docs
   assert.equal(priors, '{ work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5 }');
   assert.match(read(REFS, 'economics.md'), /`\{work: 1\.0, verify: 0\.3, inspect: 0\.3, sweep: 2\.0, implement: 3\.5\}`/);
   assert.match(read(REFS, 'economics.md'), /`rerouteRate`[^\n]*0\.2/);
+  // Every scaleByRole object literal in economics.md (the defaults block included) states the code's priors.
+  for (const m of read(REFS, 'economics.md').matchAll(/scaleByRole: (\{[^}]*\})/g)) assert.equal(m[1], priors, 'economics.md scaleByRole block');
 });
 
 test('0.1.5 defaults: findings cap, inspector quotes, mediumsPerUnit and VERDICT severity are stated in the docs', () => {

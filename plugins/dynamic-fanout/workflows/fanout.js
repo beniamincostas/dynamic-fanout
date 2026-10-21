@@ -360,7 +360,10 @@ function validate(a) {
       else {
         if (!['review', 'research'].includes(a.kind)) errors.push(`card ${id}: lenses 2 is only for kind review or research`)
         if (u.n) errors.push(`card ${id}: lenses 2 cannot be combined with n:1 — a re-derived number has no second lens`)
-        if (!['review', 'research'].includes(a.kind) || u.n) continue
+        // Two copies of an above-session card would be two above-session agents, while the
+        // at-most-one allow-up rail counts the card once.
+        if (upUnits.has(id)) errors.push(`card ${id}: lenses 2 cannot be combined with an above-session (allow-up) cell — it would run two above-session agents`)
+        if (!['review', 'research'].includes(a.kind) || u.n || upUnits.has(id)) continue
         out.units.pop()
         for (const [k, line] of Object.entries(LENSES)) {
           const lid = id + k
@@ -1202,7 +1205,9 @@ function finishUnit(L, u, outcome, reason, res, c, producer, rescue) {
     ;(res.findings || []).forEach((f, i) => { const saved = keys.size > 0 && grounded(f); if (saved) ledger.rescued++; claims.push({
       cid: `${u.id}.f${i + 1}`, unit: u.id, severity: SEVERITIES.includes(f.severity) ? f.severity : 'medium',
       title: f.title, claim: f.claim, evidence: scopeEvidence(f.evidence, u.scope.files),
-      parity: u.parity, producer: producer || u.cell, bump: L.verifyBump + (saved ? 1 : 0), blast: u.v ? u.v.B : 0, floor: floorOf(u.checks),
+      // A rescued claim always gets a skeptic (floor V2): its unit failed a capability check, so
+      // grounded quotes alone are not enough to call it PLAUSIBLE.
+      parity: u.parity, producer: producer || u.cell, bump: L.verifyBump + (saved ? 1 : 0), blast: u.v ? u.v.B : 0, floor: saved ? Math.max(floorOf(u.checks), 2) : floorOf(u.checks),
       verdict: !saved && (outcome === 'unverified' || outcome === 'brief') ? 'UNVERIFIED' : null,
       reason: saved ? `producer unit failed: ${reason || ''}`.trim() : outcome === 'unverified' || outcome === 'brief' ? `unit ${outcome}: ${reason || ''}`.trim() : null,
       rescued: saved ? `producer unit failed: ${reason || ''}`.trim() : null,
