@@ -35,7 +35,7 @@ differently-focused reviewers overlapped little (26 issues merged into 17).
   states why; echoed in the card and digest.
 - **Parity floor** V3 only for medium and above. Inspector quotes per call 40 → 60.
 - **Pricing:** `rerouteRate` 0.1 → 0.2 (7 capability failures in 44 units); `scaleByRole`
-  `{work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5}` with implementers on
+  `{work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0}` with implementers on
   their own `implement` role; implement `args.calib` passes learned factors through.
 - **report.mjs:** a PLAUSIBLE legend, `filed->verified` severity, header counts by
   `verifiedSeverity ?? severity`.
@@ -57,6 +57,18 @@ differently-focused reviewers overlapped little (26 issues merged into 17).
     `scaleByRole` literal there;
   - tests cover rescue after a re-route that returned nothing and after a fallback that
     failed again.
+
+### Validated
+- Built with the shipped implement workflow: 4 themes, all green on the first attempt, then
+  a whole-diff review (NEEDS CHANGES, follow-ups above). Actual USD 7.49 against a USD 3.86
+  estimate under the old implement pricing; this build is the second data point for the
+  `implement` prior (actual/base 1.52; the previous build ~2.2), hence 2.0.
+- End-to-end smoke review of this branch on a fixture with a ~43k-token nested CLAUDE.md:
+  - `lenses: 2` ran as two copies; their two duplicate findings merged with the absorbed
+    titles shown;
+  - every planted bug was found, and the one correct boundary was not flagged;
+  - every checked claim carries a `verifiedSeverity`; 5/5 support quotes and 8/8 evidence
+    quotes resolve; 0 nested CLAUDE.md attachments; crew USD 0.35.
 
 ## dynamic-fanout 0.1.4 — 2026-10-12
 

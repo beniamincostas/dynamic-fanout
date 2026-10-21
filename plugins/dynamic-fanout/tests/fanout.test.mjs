@@ -814,7 +814,7 @@ const near = (x, y, msg) => assert.ok(Math.abs(x - y) <= 1.5e-4, `${msg || ''} $
 
 test('per-role calibration: agentOpts carries the role; estimates scale by role × global scale', () => {
   const K = core.calibrate()
-  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 3.5 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 })
   assert.equal(K.scale, 1)
   assert.equal(core.agentOpts('implementer', K).role, 'implement')
   for (const k of ['worker', 'workerMcp', 'workerCtx']) assert.equal(core.agentOpts(k, K).role, 'work', k)
@@ -837,18 +837,18 @@ test('per-role calibration: agentOpts carries the role; estimates scale by role 
 
 test('calibrate merges scaleByRole like the other object fields', () => {
   const K = core.calibrate({ pm: 3, scaleByRole: { verify: 0.5 }, scale: 1.2, highsPerUnit: 2 })
-  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.5, inspect: 0.3, sweep: 2, implement: 3.5 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.5, inspect: 0.3, sweep: 2, implement: 2.0 })
   assert.equal(K.scale, 1.2)
   assert.equal(K.highsPerUnit, 2)
   assert.equal(K.mediumsPerUnit, 5)
-  assert.deepEqual(core.calibrate().scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 3.5 }, 'defaults are not mutated')
+  assert.deepEqual(core.calibrate().scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 }, 'defaults are not mutated')
 })
 
 test('the priced card carries the calibration factors it used', async () => {
   let { res } = await runFanout(baseArgs({ dryRun: true }), responder())
-  assert.deepEqual(res.card.calib, { pm: 3, scale: 1, scaleByRole: { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 3.5 } })
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1, scaleByRole: { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 } })
   ;({ res } = await runFanout(baseArgs({ dryRun: true, calib: { pm: 3, scale: 1.5, scaleByRole: { verify: 0.2 } } }), responder()))
-  assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 1, verify: 0.2, inspect: 0.3, sweep: 2, implement: 3.5 } })
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 1, verify: 0.2, inspect: 0.3, sweep: 2, implement: 2.0 } })
 })
 
 test('medium defaults to rung V2 (0.1.4): one skeptic per medium', async () => {
@@ -954,7 +954,7 @@ test('price model 3: leak-free defaults', () => {
   assert.equal(K.ultraReadFactor, 4, 'ultracode agents read with Read and still get the nested CLAUDE.md')
   assert.equal(K.verifierInFrac, 0.25)
   assert.equal(K.sweepInFrac, 0.25)
-  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 3.5 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 })
 })
 
 test('sweep is priced on its own role and a fraction of inAvg; the deep critic stays work', async () => {
@@ -1122,13 +1122,13 @@ test('0.1.5: the parity V3 floor applies to medium and above only', () => {
 
 test('0.1.5: implementers price as their own role', () => {
   const K = core.calibrate()
-  assert.equal(K.scaleByRole.implement, 3.5)
+  assert.equal(K.scaleByRole.implement, 2.0)
   assert.equal(core.agentOpts('implementer', K).role, 'implement')
   assert.equal(core.agentOpts('worker', K).role, 'work')
   const cell = { model: 'opus', effort: 'high' }
   const w = core.estUsd(cell, 20000, 0, K, core.agentOpts('workerCtx', K))
   const i = core.estUsd(cell, 20000, 0, K, core.agentOpts('implementer', K))
-  assert.ok(i > 3 * w, `implement ${i} vs work ${w}`)
+  assert.ok(i > 1.5 * w, `implement ${i} vs work ${w}`)
 })
 
 // ───────────────────────── 0.1.5 t2: severity calibration, findings cap ─────────────────────────
