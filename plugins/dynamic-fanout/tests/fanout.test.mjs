@@ -1137,3 +1137,75 @@ test('0.1.5: verifiedSeverity is always stored and drives digest ordering', asyn
   assert.notEqual(res.digest.top[0].title, 't0', 'top orders by verifiedSeverity')
   assert.equal(res.results.claims.filter(c => c.unit === 'u1').length, 15, 'a 15-finding unit is accepted whole')
 })
+
+// ───────────────────────── two-lens split (0.1.5) ─────────────────────────
+
+test('lenses 2: a review card expands into <id>A and <id>B with the same card and one lens line each', () => {
+  const a = baseArgs()
+  a.units[0].lenses = 2
+  const V = core.validate(a)
+  assert.deepEqual(V.errors, [])
+  assert.deepEqual(V.units.map(u => u.id), ['u1A', 'u1B', 'u2'])
+  const [A, B] = V.units
+  for (const k of ['cell', 'fbCell', 'checks', 'ctx', 'scope', 'in', 'vec', 'why']) assert.deepEqual(A[k], B[k], k)
+  assert.equal(A.cell.effort, 'medium')
+  assert.equal(A.lensOf, 'u1')
+  assert.equal(A.brief, 'review a.py\nLens: inputs and data: unusual, missing, duplicated or malformed values, None/empty/zero, boundaries, encodings, rounding.')
+  assert.equal(B.brief, 'review a.py\nLens: time and ordering: re-runs and replay, partial failure, the order of side effects, dates, clocks and business days, concurrency.')
+})
+
+test('lenses 2: both copies are priced (that unit\'s spend doubles) and shown on the card', async () => {
+  const one = await runFanout(baseArgs({ dryRun: true }), responder())
+  const a = baseArgs({ dryRun: true })
+  a.units[0].lenses = 2
+  const two = await runFanout(a, responder())
+  assert.equal(two.res.reason, 'dryRun', JSON.stringify(two.res.errors))
+  const u1 = one.res.card.units.find(u => u.id === 'u1')
+  const rows = two.res.card.units.filter(u => u.lensOf === 'u1')
+  assert.deepEqual(rows.map(u => u.id), ['u1A', 'u1B'])
+  assert.deepEqual(rows.map(u => u.lens), ['A', 'B'])
+  for (const r of rows) assert.equal(r.estUsd, u1.estUsd)
+  assert.ok(two.res.card.money.P > one.res.card.money.P)
+})
+
+test('lenses 2: each copy runs once with its lens line; a duplicate finding merges, distinct ones stay', async () => {
+  const a = baseArgs()
+  a.units[0].lenses = 2
+  const { res, calls } = await runFanout(a, responder({
+    'u1A:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'medium', 'total skips the last item'), finding('src/a.py', 40, 'low', 'empty list crashes')] }),
+    'u1B:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'medium', 'total skips the last item'), finding('src/a.py', 80, 'low', 'retry replays the write')] }),
+  }))
+  const pA = calls.find(c => tagOf(c.prompt) === 'u1A:1').prompt
+  const pB = calls.find(c => tagOf(c.prompt) === 'u1B:1').prompt
+  assert.match(pA, /Lens: inputs and data/)
+  assert.doesNotMatch(pA, /Lens: time and ordering/)
+  assert.match(pB, /Lens: time and ordering/)
+  assert.deepEqual(res.ledger.units.map(u => u.id).sort(), ['u1A', 'u1B', 'u2'])
+  const titles = res.results.claims.map(c => c.title).sort()
+  assert.deepEqual(titles, ['empty list crashes', 'retry replays the write', 'total skips the last item'])
+})
+
+test('lenses 2: an override by the original id applies to both copies', () => {
+  const a = baseArgs()
+  a.units[0].lenses = 2
+  a.overrides = [{ id: 'u1', p: { model: 'opus', effort: 'high' }, by: 'user' }]
+  const V = core.validate(a)
+  assert.deepEqual(V.warnings.filter(w => /^override/.test(w)), [])
+  for (const u of V.units.slice(0, 2)) {
+    assert.equal(u.override, 'user')
+    assert.equal(cellKeyOf(u.cell), 'opus·high')
+    assert.equal(u.fbCell, null)
+  }
+})
+
+const cellKeyOf = c => `${c.model}·${c.effort}`
+
+test('rail: lenses must be 1 or 2, only on review/research cards, never with n:1', async () => {
+  const a = baseArgs()
+  a.units[0].lenses = 3
+  await rejects(a, /^card u1: lenses must be 1 or 2/)
+  const b = baseArgs({ kind: 'data' })
+  b.units[1] = { ...b.units[1], n: 1, check: 'tieout+rederive', lenses: 2 }
+  await rejects(b, /^card u2: lenses 2 is only for kind review or research/)
+  await rejects(b, /^card u2: lenses 2 cannot be combined with n:1/)
+})
