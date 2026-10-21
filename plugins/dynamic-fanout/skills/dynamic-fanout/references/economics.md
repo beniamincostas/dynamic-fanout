@@ -60,7 +60,7 @@ estUsd = [ (prefix + g·in)        × inPrice × cacheWrite   // everything writ
 | `verifierInFrac` | 0.25 | a verifier (and the critic) is priced at this share of `ultra.inAvg`; skeptics reading through Bash measured 4–10k tokens |
 | `sweepInFrac` | 0.25 | a gap-sweep round is priced at this share of `ultra.inAvg` (it re-reads a slice of scope, not a unit's whole reading) |
 | `ultraReadFactor`, `ultraTurnCap` | 4, 80 | how U's agents are priced (below) |
-| `scaleByRole` | `{work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5}` | per-role prior at or above the fit learned under price model 3 over 9 runs (work 0.6→1.04→0.81, verify 0.27–0.30, inspect 0.30–0.39, sweep 0.79→3.82, noisy); `implement` (since 0.1.5): implementers keep CLAUDE.md, run test suites and take many turns, and priced as `work` they came out ~3.5× low |
+| `scaleByRole` | `{work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0}` | per-role prior at or above the fit learned under price model 3 over 9 runs (work 0.6→1.04→0.81, verify 0.27–0.30, inspect 0.30–0.39, sweep 0.79→3.82, noisy); `implement` (since 0.1.5): implementers keep CLAUDE.md, run test suites and take many turns, and priced as `work` they came out ~1.5–2.2× low (two builds) |
 | `scale` | 1 | global multiplier on top of `scaleByRole`; honoured only from the current price model, neutral otherwise |
 
 - `in` = tokens the agent is planned to read; `ctxTok` = CLAUDE.md tokens on its path
@@ -284,7 +284,7 @@ these thresholds by 1.5 for that kind, and the card notes it.
 0.1.1 learned one `calib.scale` for every agent. 0.1.2 learned one **per role** because
 the validation run's miss ran in opposite directions by role (see "What 0.1.1 got
 wrong"). 0.1.4 adds a fourth role and keys everything by price model; 0.1.5 a fifth,
-`implement` (prior 3.5). The roles: `work` (worker/worker-mcp/worker-ctx, plus the deep
+`implement` (prior 2.0). The roles: `work` (worker/worker-mcp/worker-ctx, plus the deep
 completeness critic), `implement` (implementer themes), `sweep`
 (gap-sweep rounds), `verify` (skeptic batches), `inspect` (inspector calls).
 
@@ -347,7 +347,7 @@ calib: {
   readFactor: 1, ultraReadFactor: 4, ultraTurnCap: 80,
   caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
   inspectorIn: 12000, verifierInFrac: 0.25, sweepInFrac: 0.25,
-  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5 }, scale: 1,
+  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0 }, scale: 1,
   highsPerUnit: 0.9, mediumsPerUnit: 5
 }
 ```

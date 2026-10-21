@@ -60,8 +60,8 @@ test('0.1.5 defaults: rerouteRate 0.2 and the role priors are stated in the docs
   assert.equal(rate, '0.2');
   assert.match(read(REFS, 'routing.md'), new RegExp('instead of ' + rate.replace('.', '\\.')));
   const priors = FANOUT.match(/\n  scaleByRole: (\{[^}]*\})/)[1];
-  assert.equal(priors, '{ work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5 }');
-  assert.match(read(REFS, 'economics.md'), /`\{work: 1\.0, verify: 0\.3, inspect: 0\.3, sweep: 2\.0, implement: 3\.5\}`/);
+  assert.equal(priors, '{ work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0 }');
+  assert.match(read(REFS, 'economics.md'), /`\{work: 1\.0, verify: 0\.3, inspect: 0\.3, sweep: 2\.0, implement: 2\.0\}`/);
   assert.match(read(REFS, 'economics.md'), /`rerouteRate`[^\n]*0\.2/);
   // Every scaleByRole object literal in economics.md (the defaults block included) states the code's priors.
   for (const m of read(REFS, 'economics.md').matchAll(/scaleByRole: (\{[^}]*\})/g)) assert.equal(m[1], priors, 'economics.md scaleByRole block');
@@ -116,7 +116,7 @@ test('0.1.5 docs: master overhead line, recall rule, lenses, waiver, wrapper pat
     assert.match(t, /most findings are medium or low/, f);
   }
   const impl = read(REFS, 'playbooks', 'implement.md');
-  assert.match(impl, /`implement`[^\n]*3\.5/);
+  assert.match(impl, /`implement`[^\n]*2\.0/);
   assert.match(impl, /calib/);
-  assert.match(read(REFS, 'economics.md'), /implement[^\n]*3\.5/);
+  assert.match(read(REFS, 'economics.md'), /implement[^\n]*2\.0/);
 });

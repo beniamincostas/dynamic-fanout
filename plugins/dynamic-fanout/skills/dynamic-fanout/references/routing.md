@@ -239,7 +239,7 @@ with planned turns = min(cap, round((10 + in/2500) × effort factor)) and the pr
 | `skeptic` | verifiers | 12 | lean 8k |
 | `inspector` | quote checks, B2 units | 6 | lean 8k |
 
-Implementers price on their own role, `implement` (prior 3.5: they keep CLAUDE.md, run test
+Implementers price on their own role, `implement` (prior 2.0: they keep CLAUDE.md, run test
 suites and take many turns; priced as work they came out ~3.5× low). Pass the `CALIB` line
 from `stats.mjs` as implement `args.calib` so learned factors apply.
 

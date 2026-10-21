@@ -80,10 +80,9 @@ const DEFAULT_CALIB = {
   // verify 0.27-0.30, inspect 0.30-0.39, sweep 0.79->3.82 (noisy). The priors sit at or above
   // the fit on purpose, because under-estimating exhausts the work pool and starves
   // verification. Implementers keep CLAUDE.md, run test suites and take many turns: priced
-  // as work they came out ~3.5x low (theme estimates 0.5-0.8 vs actual 1.7-3.4), so they are
-  // their own role. estUsd's structure is unchanged, so PRICE_MODEL stays and learned factors
+  // as work they came out ~1.5-2.2x low on two builds, so they are their own role (prior 2.0). estUsd's structure is unchanged, so PRICE_MODEL stays and learned factors
   // stay valid.
-  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5 },
+  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0 },
   // Global extra multiplier on top of scaleByRole (only honoured from the same price model).
   scale: 1,
   // Expected findings per unit, for sizing the verification reserve. Measured: 7 high +
