@@ -15,7 +15,7 @@ it never overrides the rails in `workflow.md`.
 
 ## Shape: dimensions → dedup → verification by rung
 
-1. **Work:** one unit per dimension × file cluster (packed). Each returns ≤8 findings
+1. **Work:** one unit per dimension × file cluster (packed). Each returns ≤15 findings
    `{title, severity, claim, evidence: ≤4 × {file, line, quote}}`; put the failure
    scenario in `claim`.
 2. **Dedup** (the one barrier): the foreman merges the same issue reported by different units (see dedupKey) and keeps `merged` + `mergedFrom`.

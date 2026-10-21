@@ -64,3 +64,25 @@ test('0.1.5 defaults: rerouteRate 0.2 and the role priors are stated in the docs
   assert.match(read(REFS, 'economics.md'), /`\{work: 1\.0, verify: 0\.3, inspect: 0\.3, sweep: 2\.0, implement: 3\.5\}`/);
   assert.match(read(REFS, 'economics.md'), /`rerouteRate`[^\n]*0\.2/);
 });
+
+test('0.1.5 defaults: findings cap, inspector quotes, mediumsPerUnit and VERDICT severity are stated in the docs', () => {
+  const cap = FANOUT.match(/findings: \{\n\s+type: 'array', maxItems: (\d+)/)[1];
+  assert.equal(cap, '15');
+  assert.match(FANOUT, new RegExp(`at most ${cap} findings`));
+  assert.match(read(REFS, 'schemas.md'), new RegExp('`findings` \\| ≤' + cap + ' ×'));
+  assert.match(read(REFS, 'playbooks', 'review.md'), new RegExp('≤' + cap + ' findings'));
+  for (const f of ['worker', 'worker-ctx', 'worker-mcp']) {
+    assert.match(read(PLUGIN, 'agents', `${f}.md`), new RegExp(`At most ${cap} findings`), f);
+  }
+  const quotes = FANOUT.match(/const MAX_INSPECT_QUOTES = (\d+)/)[1];
+  assert.match(read(REFS, 'workflow.md'), new RegExp('≤' + quotes + ' quotes per'));
+  const mpu = FANOUT.match(/\n  mediumsPerUnit: (\d+)/)[1];
+  assert.match(read(REFS, 'economics.md'), new RegExp('`mediumsPerUnit: ' + mpu + '`'));
+  assert.match(read(REFS, 'economics.md'), new RegExp('mediumsPerUnit: ' + mpu + '\\n'));
+  assert.match(read(REFS, 'schemas.md'), /reason ≤300, severity, counter_quote\?/);
+  const line = 'Rate by what the code does today, not the worst imaginable case; most findings are medium or low.';
+  assert.ok(FANOUT.includes(line));
+  for (const f of ['worker', 'worker-ctx', 'worker-mcp', 'skeptic']) {
+    assert.ok(read(PLUGIN, 'agents', `${f}.md`).includes(line), `${f}.md carries the severity rubric`);
+  }
+});

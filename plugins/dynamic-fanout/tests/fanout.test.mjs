@@ -840,7 +840,7 @@ test('calibrate merges scaleByRole like the other object fields', () => {
   assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.5, inspect: 0.3, sweep: 2, implement: 3.5 })
   assert.equal(K.scale, 1.2)
   assert.equal(K.highsPerUnit, 2)
-  assert.equal(K.mediumsPerUnit, 4)
+  assert.equal(K.mediumsPerUnit, 5)
   assert.deepEqual(core.calibrate().scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 3.5 }, 'defaults are not mutated')
 })
 
@@ -904,7 +904,7 @@ test('price: expected verifier batches follow the expected findings', () => {
   const K = core.calibrate()
   const R = core.DEFAULT_RUNGS
   // 8 units, standard (batch 3, topK 12): ceil(8·0.9/3) = 3 batches for highs, mediums at the
-  // V2 default: + ceil(min(8·4, 12)/3) = 4
+  // V2 default: + ceil(min(8·5, 12)/3) = 4
   assert.equal(core.expectedVerifiers(8, 'standard', {}, R, K), 7)
   assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V2' }, K), 7)
   // a medium pinned to V1 reserves none
@@ -917,7 +917,7 @@ test('price: expected verifier batches follow the expected findings', () => {
   const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V1' } } })
   assert.equal(core.price(a, core.validate(a), K).expected, Math.ceil(2 * 0.9 / 3))
   const b = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' } } })
-  assert.equal(core.price(b, core.validate(b), K).expected, 1 + Math.ceil(Math.min(2 * 4, 12) / 3))
+  assert.equal(core.price(b, core.validate(b), K).expected, 1 + Math.ceil(Math.min(2 * 5, 12) / 3))
   const c = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, expected: 5 } })
   assert.equal(core.price(c, core.validate(c), K).expected, 5)
 })
@@ -1083,4 +1083,57 @@ test('0.1.5: implementers price as their own role', () => {
   const w = core.estUsd(cell, 20000, 0, K, core.agentOpts('workerCtx', K))
   const i = core.estUsd(cell, 20000, 0, K, core.agentOpts('implementer', K))
   assert.ok(i > 3 * w, `implement ${i} vs work ${w}`)
+})
+
+// ───────────────────────── 0.1.5 t2: severity calibration, findings cap ─────────────────────────
+
+test('0.1.5: the severity rubric is in the unit, sweep and skeptic prompts', async () => {
+  assert.match(core.SEVERITY_RUBRIC, /blocker = /)
+  assert.match(core.SEVERITY_RUBRIC, /Rate by what the code does today, not the worst imaginable case; most findings are medium or low\./)
+  assert.ok(core.RULES.includes(core.SEVERITY_RUBRIC), 'RULES carries the rubric')
+  assert.ok(core.SKEPTIC_RULES.includes(core.SEVERITY_RUBRIC), 'SKEPTIC_RULES carries the rubric')
+  const { calls } = await runFanout(baseArgs({ sweep: { rounds: 1 } }), responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'high')] }),
+  }))
+  const unitCall = calls.find(c => tagOf(c.prompt) === 'u1:1')
+  const sweepCall = calls.find(c => tagOf(c.prompt).startsWith('s:'))
+  const skepCall = calls.find(c => tagOf(c.prompt).startsWith('v:'))
+  for (const [name, c] of [['unit', unitCall], ['sweep', sweepCall], ['skeptic', skepCall]]) {
+    assert.ok(c, `${name} call ran`)
+    assert.ok(c.prompt.includes(core.SEVERITY_RUBRIC), `${name} prompt carries the rubric`)
+  }
+  assert.match(core.SKEPTIC_RULES, /For every claim you check, state your own severity rating/)
+})
+
+test('0.1.5: VERDICT requires severity; the findings cap is 15', () => {
+  const item = core.VERDICT.properties.verdicts.items
+  assert.ok(item.required.includes('severity'))
+  assert.equal(core.UNIT_RESULT.properties.findings.maxItems, 15)
+  assert.equal(core.MAX_INSPECT_QUOTES, 60)
+  assert.equal(core.calibrate().mediumsPerUnit, 5)
+  assert.match(core.RULES, /at most 15 findings/)
+})
+
+test('0.1.5: verifiedSeverity is always stored and drives digest ordering', async () => {
+  const fs = Array.from({ length: 15 }, (_, i) => finding('src/a.py', i + 1, i === 0 ? 'high' : 'medium', `t${i}`))
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: fs }),
+    'u2:1': okUnit({ files_read: ['src/b.py'], findings: [finding('src/b.py', 2, 'medium', 'other')] }),
+  })
+  // The skeptic downgrades the high claim t0 to low and states no severity for the rest.
+  const { res } = await runFanout(baseArgs(), (prompt, o, n) => {
+    if (!tagOf(prompt).startsWith('v:')) return base(prompt, o, n)
+    const r = verdictAll(prompt, 'CONFIRMED')
+    for (const v of r.verdicts) if (prompt.includes(`${v.cid} | high | t0`)) v.severity = 'low'
+    return r
+  })
+  const verified = res.results.claims.filter(c => c.verdict && c.verdict !== 'PENDING' && c.verdict !== 'UNVERIFIED' && c.rung && c.rung !== 'V0' && c.rung !== 'V1')
+  assert.ok(verified.length > 0, 'some claims were verified by a skeptic')
+  for (const c of verified) assert.ok(c.verifiedSeverity, `${c.cid} carries verifiedSeverity`)
+  const t0 = res.results.claims.find(c => c.title === 't0')
+  assert.equal(t0.severity, 'high', 'the filed severity is kept')
+  assert.equal(t0.verifiedSeverity, 'low')
+  assert.equal(t0.rung, 'V3', 'the rung is chosen from the filed severity')
+  assert.notEqual(res.digest.top[0].title, 't0', 'top orders by verifiedSeverity')
+  assert.equal(res.results.claims.filter(c => c.unit === 'u1').length, 15, 'a 15-finding unit is accepted whole')
 })

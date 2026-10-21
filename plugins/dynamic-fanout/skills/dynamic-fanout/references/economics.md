@@ -204,8 +204,8 @@ mediums = medRung ∈ {V2,V3,V4} ? ceil(min(nUnits × mediumsPerUnit, topK) / ba
 expected = highs + mediums
 ```
 
-`highsPerUnit: 0.9` and `mediumsPerUnit: 4` are measured on the validation review (7 high
-+ 34 medium from 8 units). Highs are exempt from `topK` outright (`topKExempt` also now
+`highsPerUnit: 0.9` and `mediumsPerUnit: 5` are measured on the validation review (7 high
++ 34 medium from 8 units; mediums raised from 4 to 5 in 0.1.5 with the 15-finding cap). Highs are exempt from `topK` outright (`topKExempt` also now
 exempts any V3+-rung claim with severity ≥ high, not only parity), so `highs` reserves
 real capacity for all of them. Since 0.1.4 mediums default to `V2` (lean skeptics are
 cheap), so `mediums` reserves one skeptic per batch of up to `topK` mediums; a master who
@@ -347,7 +347,7 @@ calib: {
   caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
   inspectorIn: 12000, verifierInFrac: 0.25, sweepInFrac: 0.25,
   scaleByRole: { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 }, scale: 1,
-  highsPerUnit: 0.9, mediumsPerUnit: 4
+  highsPerUnit: 0.9, mediumsPerUnit: 5
 }
 ```
 

@@ -35,7 +35,7 @@ const CAPABILITY_REASONS = ['too_hard', 'contradictory_evidence']
 const DEFAULT_RUNGS = { blocker: 'V3', high: 'V3', medium: 'V2', low: 'V0', info: 'V0' }
 const DEFAULT_TOPK = { quick: 6, standard: 12, deep: 25 }
 const DEFAULT_ROUNDS = { quick: 0, standard: 1, deep: 2 }
-const MAX_INSPECT_QUOTES = 40
+const MAX_INSPECT_QUOTES = 60
 
 // Bump PRICE_MODEL whenever estUsd's structure changes (new priors alone do not need it): learned
 // factors (args.calib.scale / scaleByRole, from stats.mjs) only hold for the model they were
@@ -82,9 +82,9 @@ const DEFAULT_CALIB = {
   // Global extra multiplier on top of scaleByRole (only honoured from the same price model).
   scale: 1,
   // Expected findings per unit, for sizing the verification reserve. Measured: 7 high +
-  // 34 medium from 8 review units.
+  // 34 medium from 8 review units; mediums raised to 5 with the 15-finding cap (0.1.5).
   highsPerUnit: 0.9,
-  mediumsPerUnit: 4,
+  mediumsPerUnit: 5,
 }
 
 const mr = m => MODELS.indexOf(m)
@@ -826,7 +826,7 @@ const UNIT_RESULT = {
     files_read: { type: 'array', items: { type: 'string' } },
     summary: { type: 'string', maxLength: 300 },
     findings: {
-      type: 'array', maxItems: 8,
+      type: 'array', maxItems: 15,
       items: {
         type: 'object',
         properties: {
@@ -883,7 +883,7 @@ const VERDICT = {
           support: EVIDENCE,
           support_cmd: { type: 'string', maxLength: 200 },
         },
-        required: ['cid', 'verdict', 'reason'],
+        required: ['cid', 'verdict', 'reason', 'severity'],
       },
     },
   },
@@ -910,6 +910,18 @@ function unitSchema(u) {
   return s
 }
 
+// One severity scale for producers and skeptics. A blind audit found 61% of findings filed too
+// high (often by two levels), so the rubric anchors each level to what the code does today.
+const SEVERITY_RUBRIC = [
+  'Severity:',
+  '- blocker = wrong customer-facing money or legal action, or data loss, in normal operation.',
+  '- high = a wrong outcome is likely in realistic cases.',
+  '- medium = edge cases, or a real operational risk.',
+  '- low = minor.',
+  '- info = an observation.',
+  'Rate by what the code does today, not the worst imaginable case; most findings are medium or low.',
+].join('\n')
+
 const RULES = [
   'Rules for this unit:',
   '- Read-only: do not edit, write, commit or push anything. Never print credentials or .env values.',
@@ -917,7 +929,8 @@ const RULES = [
   '- files_read must list every file you read lines from, including through grep or sed.',
   '- If you cannot finish, set status "partial" and list what is left in remaining. If the brief is unclear, you lack access, or the work is outside the scope, set status "blocked" with blocked_reason ambiguous_brief | no_access | out_of_scope instead of guessing. Use too_hard or contradictory_evidence when that is the honest reason.',
   '- confidence is your honest probability (0-1) that the findings are correct and complete. Being unsure is fine; overclaiming is not.',
-  '- Compact output: at most 8 findings, summary at most 300 characters. Your final answer is the structured output only.',
+  '- Compact output: at most 15 findings, summary at most 300 characters. Your final answer is the structured output only.',
+  SEVERITY_RUBRIC,
 ].join('\n')
 
 const NUMBER_RULES = [
@@ -939,7 +952,9 @@ const SKEPTIC_RULES = [
   '- REFUTED: you found concrete counter-evidence; give counter_quote {file, line, quote}. No counter-evidence means not refuted.',
   '- PLAUSIBLE: it could be true but you could not fully confirm it.',
   '- UNVERIFIABLE: it cannot be checked with the access you have.',
-  'You see only the claim and its evidence pointers, not the producer\'s reasoning. Check the files yourself with Bash (`grep -n`, `nl -ba FILE | sed -n \'A,Bp\'`). Keep each reason under 300 characters. Correct the severity if it is wrong. Read-only: never edit anything.',
+  'You see only the claim and its evidence pointers, not the producer\'s reasoning. Check the files yourself with Bash (`grep -n`, `nl -ba FILE | sed -n \'A,Bp\'`). Keep each reason under 300 characters. Read-only: never edit anything.',
+  'For every claim you check, state your own severity rating in severity, by the rubric below, whatever the producer filed.',
+  SEVERITY_RUBRIC,
 ].join('\n')
 
 function trimJson(x, max) {
@@ -1353,7 +1368,10 @@ async function runBatch(b) {
     if (v.counter_quote) c.counter_quote = v.counter_quote.file ? { ...v.counter_quote, file: toScope(v.counter_quote.file, allScopeFiles) } : v.counter_quote
     if (v.support) c.support = v.support.file ? { ...v.support, file: toScope(v.support.file, allScopeFiles) } : v.support
     if (v.support_cmd) c.support_cmd = v.support_cmd
-    if (v.severity && SEVERITIES.includes(v.severity)) c.verifiedSeverity = v.severity
+    // Always stored: the skeptic's own rating (a V4 panel: the highest any lens stated), else the
+    // filed severity. The rung was already chosen from the filed severity.
+    const rated = got.filter(x => x && SEVERITIES.includes(x.severity)).map(x => x.severity)
+    c.verifiedSeverity = rated.length ? rated.reduce((a, s) => (sevRank(s) > sevRank(a) ? s : a)) : c.severity
   }
 }
 
@@ -1438,13 +1456,15 @@ const invariants = V.stage === 'verify'
   : evalInvariants(A.reduce && A.reduce.invariants, numbersByUnit)
 const count = o => ledger.units.filter(l => l.outcome === o).length
 const vcount = v => claims.filter(c => c.verdict === v).length
-const SEV_ORDER = (x, y) => sevRank(y.severity) - sevRank(x.severity) || (y.blast || 0) - (x.blast || 0)
+const effSev = c => c.verifiedSeverity || c.severity
+const SEV_ORDER = (x, y) => sevRank(effSev(y)) - sevRank(effSev(x)) || (y.blast || 0) - (x.blast || 0)
 const digest = {
   counts: {
     units: ledger.units.length, ok: count('ok'), okRerouted: count('ok-rerouted'), okPromoted: count('ok-promoted'),
     brief: count('brief'), unverified: count('unverified'), claims: claims.length, confirmed: vcount('CONFIRMED'),
     plausible: vcount('PLAUSIBLE'), refuted: vcount('REFUTED'), unverifiedClaims: vcount('UNVERIFIED'), pending: vcount('PENDING'),
     rescued: claims.filter(c => c.rescued).length,
+    bySeverity: Object.fromEntries(SEVERITIES.map(s => [s, claims.filter(c => effSev(c) === s).length])),
   },
   waiver: V.waiver || null,
   exceptions: ledger.units.filter(l => l.outcome !== 'ok').map(l => ({
@@ -1453,7 +1473,7 @@ const digest = {
   top: [...claims].sort(SEV_ORDER).slice(0, 15).map(c => {
     const e = (c.evidence || [])[0] || {}
     const support = c.support && c.support.file ? `${c.support.file}:${c.support.line}` : c.support_cmd || null
-    return { cid: c.cid, unit: c.unit, severity: c.severity, title: c.title, verdict: c.verdict, file: e.file || null, line: e.line || null, support }
+    return { cid: c.cid, unit: c.unit, severity: c.severity, verifiedSeverity: c.verifiedSeverity || null, title: c.title, verdict: c.verdict, file: e.file || null, line: e.line || null, support }
   }),
   money: {
     U: round2(M.U), P: round2(M.P), R: round2(M.R), C: round2(M.C), parityBound: !!(A.caps && A.caps.parityBound),

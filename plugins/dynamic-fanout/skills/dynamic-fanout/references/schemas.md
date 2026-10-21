@@ -59,7 +59,7 @@ factors without the current `pm` are ignored with a warning.
 | `remaining` | string[] | with `partial`: what was not reached (→ one slice run) |
 | `files_read` | string[] | required; every file actually opened |
 | `summary` | string ≤300 | required |
-| `findings` | ≤8 × `{title ≤160, severity, claim ≤300, evidence: ≤4 × {file, line ≥1, quote ≤160}}` | required (may be empty); severity ∈ `info low medium high blocker` |
+| `findings` | ≤15 × `{title ≤160, severity, claim ≤300, evidence: ≤4 × {file, line ≥1, quote ≤160}}` | required (may be empty); severity ∈ `info low medium high blocker` |
 | `numbers` | `{name, value, method?}[]` | value is a decimal **string** (`"-1234.56"`); compared in integer cents |
 | `confidence` | 0..1 | required; a sort key and one soft trigger, never a re-route on its own |
 | `assumptions` | string[] | required; ≥3 counts as a soft signal |
@@ -73,7 +73,7 @@ a capability failure; <50 % selects `redo` mode.
 
 ## VERDICT: skeptic agent
 
-`{ verdicts: [{cid, verdict, reason ≤300, severity?, counter_quote?, support?, support_cmd? ≤200}] }` with
+`{ verdicts: [{cid, verdict, reason ≤300, severity, counter_quote?, support?, support_cmd? ≤200}] }` with
 `verdict ∈ CONFIRMED | REFUTED | PLAUSIBLE | UNVERIFIABLE`. A REFUTED verdict without a
 `counter_quote {file, line, quote}` is kept as PLAUSIBLE; a CONFIRMED verdict without the
 skeptic's own `support {file, line, quote}` (a verbatim quote it found) or, for an absence
@@ -90,6 +90,11 @@ UNVERIFIABLE becomes UNVERIFIED.
 reason, counter_quote, support, support_cmd, parity, producer:{model, effort}, bump, blast, floor, mergedFrom}`.
 Evidence, `counter_quote` and `support` paths are canonicalized to the Scope spelling.
 `node scripts/report.mjs <output.json>` prints them sorted by severity.
+`verifiedSeverity` is always set on a verified claim: the skeptic's own rating (required in
+VERDICT; a V4 panel keeps the highest any lens stated), else the filed severity. The rung is
+chosen from the filed `severity`; `digest.top` ordering and `digest.counts.bySeverity` use
+`verifiedSeverity ?? severity`. Producers and skeptics rate by one rubric (`SEVERITY_RUBRIC`
+in fanout.js): rate by what the code does today; most findings are medium or low.
 `floor` is the unit's own rung floor from a `V2`/`V3`/`V4` token in its `check` (-1 if
 none); when merging duplicate claims the kept floor is the highest of the merged set.
 `verdict ∈ CONFIRMED | PLAUSIBLE | REFUTED | UNVERIFIED | PENDING` (PENDING only after a
