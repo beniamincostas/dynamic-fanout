@@ -120,3 +120,12 @@ test('0.1.5 docs: master overhead line, recall rule, lenses, waiver, wrapper pat
   assert.match(impl, /calib/);
   assert.match(read(REFS, 'economics.md'), /implement[^\n]*2\.0/);
 });
+
+test('SKILL.md names every playbook, so a new one is reachable', () => {
+  for (const f of fs.readdirSync(path.join(REFS, 'playbooks'))) {
+    if (f.endsWith('.md') && !['research.md', 'review.md', 'data.md', 'implement.md'].includes(f)) {
+      assert.match(SKILL, new RegExp('playbooks/' + f.replace('.', '\\.')), f);
+    }
+  }
+  assert.match(SKILL, /not checked out at the session cwd/);
+});
