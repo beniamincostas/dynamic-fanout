@@ -272,8 +272,11 @@ test('classify: the four classes', () => {
   assert.equal(core.classify(u1, { ...ok, status: 'blocked', blocked_reason: 'ambiguous_brief' }, null, {}).cls, 'brief')
   assert.equal(core.classify(u1, { ...ok, files_read: [] }, null, {}).cls, 'capacity')
   assert.equal(core.classify(u1, { ...ok, status: 'partial', remaining: ['x'] }, null, {}).cls, 'capacity')
-  const second = core.classify(u1, { ...ok, files_read: [] }, null, { capacityUsed: true })
-  assert.equal(second.cls, 'capability', 'a cited file that was not read is a capability failure')
+  const inspected = { total: 1, resolved: 1, rate: 1, resolvedFiles: [] }
+  const second = core.classify(u1, { ...ok, files_read: [] }, inspected, { capacityUsed: true })
+  assert.equal(second.cls, 'capability', 'with an inspector, a cited file that was neither read nor resolved is a capability failure')
+  assert.equal(core.classify(u1, { ...ok, files_read: [] }, { ...inspected, resolvedFiles: ['src/a.py'] }, { capacityUsed: true }).cls, 'ok', 'a resolved quote counts as read')
+  assert.equal(core.classify(u1, { ...ok, files_read: [] }, null, { capacityUsed: true }).cls, 'ok', 'without an inspector it is only a soft signal')
   const cap = (res, insp, st) => core.classify(u1, res, insp, st || {})
   assert.equal(cap(ok, { total: 10, resolved: 6, rate: 0.6 }).cls, 'capability')
   assert.equal(cap(ok, { total: 10, resolved: 4, rate: 0.4 }).mode, 'redo')
@@ -460,12 +463,13 @@ test('verification: rungs, cells, topK, refuted-without-counter-quote', async ()
   a.units[0].ctx = 'keep'
   a.units[0].fb = null
   const { res, calls } = await runFanout(a, responder({
-    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'low', 'parity low')] }),
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'medium', 'parity med'), finding('src/a.py', 4, 'low', 'parity low')] }),
     'u2:1': okUnit({ files_read: ['src/b.py'], findings: [finding('src/b.py', 10, 'medium', 'm1'), finding('src/b.py', 50, 'medium', 'm2'), finding('src/b.py', 70, 'medium', 'm3'), finding('src/b.py', 90, 'low', 'l1')] }),
     'v:b1:1': p => verdictAll(p, 'REFUTED'),
   }))
   const byTitle = t => res.results.claims.find(c => c.title === t)
-  assert.equal(byTitle('parity low').rung, 'V3', 'parity claims are verified at V3 or higher')
+  assert.equal(byTitle('parity med').rung, 'V3', 'parity claims of medium and above are verified at V3 or higher')
+  assert.equal(byTitle('parity low').rung, 'V0', 'low parity claims keep their own rung (0.1.5)')
   assert.equal(byTitle('l1').verdict, 'PLAUSIBLE')
   assert.equal(byTitle('l1').verdictBy, 'V0')
   const vcalls = calls.filter(c => tagOf(c.prompt).startsWith('v:'))
@@ -473,7 +477,7 @@ test('verification: rungs, cells, topK, refuted-without-counter-quote', async ()
   assert.ok(cells.includes('opus·high'), 'parity claim on S·high')
   assert.ok(cells.includes('sonnet·medium'), 'V2 on the producer model at medium')
   // parity claims bypass topK; topK = 2 of the 3 non-parity V2 claims → one is UNVERIFIED topK
-  assert.notEqual(byTitle('parity low').verdictBy, 'topK')
+  assert.notEqual(byTitle('parity med').verdictBy, 'topK')
   assert.equal(res.results.claims.filter(c => c.verdictBy === 'topK').length, 1)
   assert.ok(res.digest.dropped.some(d => d.what === 'claims beyond topK'))
   // b1 refuted without a counter-quote → PLAUSIBLE
@@ -810,19 +814,20 @@ const near = (x, y, msg) => assert.ok(Math.abs(x - y) <= 1.5e-4, `${msg || ''} $
 
 test('per-role calibration: agentOpts carries the role; estimates scale by role × global scale', () => {
   const K = core.calibrate()
-  assert.deepEqual(K.scaleByRole, { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 3.5 })
   assert.equal(K.scale, 1)
-  for (const k of ['implementer', 'worker', 'workerMcp', 'workerCtx']) assert.equal(core.agentOpts(k, K).role, 'work', k)
+  assert.equal(core.agentOpts('implementer', K).role, 'implement')
+  for (const k of ['worker', 'workerMcp', 'workerCtx']) assert.equal(core.agentOpts(k, K).role, 'work', k)
   assert.equal(core.agentOpts('skeptic', K).role, 'verify')
   assert.equal(core.agentOpts('inspector', K).role, 'inspect')
   const cell = { model: 'opus', effort: 'high' }
   const base = key => { const o = core.agentOpts(key, K); return core.estUsd(cell, 40000, 0, K, { lean: o.lean, cap: o.cap }) }
-  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('skeptic', K)), base('skeptic') * 0.35, 'skeptic')
-  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('inspector', K)), base('inspector') * 0.5, 'inspector')
-  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('worker', K)), base('worker') * 0.6, 'worker')
+  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('skeptic', K)), base('skeptic') * 0.3, 'skeptic')
+  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('inspector', K)), base('inspector') * 0.3, 'inspector')
+  near(core.estUsd(cell, 40000, 0, K, core.agentOpts('worker', K)), base('worker') * 1, 'worker')
   // the global scale stays an extra multiplier on top of the role factor
   const K2 = core.calibrate({ pm: 3, scale: 2 })
-  near(core.estUsd(cell, 40000, 0, K2, core.agentOpts('skeptic', K2)), base('skeptic') * 0.35 * 2, 'skeptic × scale')
+  near(core.estUsd(cell, 40000, 0, K2, core.agentOpts('skeptic', K2)), base('skeptic') * 0.3 * 2, 'skeptic × scale')
   // the verification reserve is priced on the skeptic role
   const a = baseArgs()
   const V = core.validate(a)
@@ -832,18 +837,18 @@ test('per-role calibration: agentOpts carries the role; estimates scale by role 
 
 test('calibrate merges scaleByRole like the other object fields', () => {
   const K = core.calibrate({ pm: 3, scaleByRole: { verify: 0.5 }, scale: 1.2, highsPerUnit: 2 })
-  assert.deepEqual(K.scaleByRole, { work: 0.6, verify: 0.5, inspect: 0.5, sweep: 0.8 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.5, inspect: 0.3, sweep: 2, implement: 3.5 })
   assert.equal(K.scale, 1.2)
   assert.equal(K.highsPerUnit, 2)
   assert.equal(K.mediumsPerUnit, 4)
-  assert.deepEqual(core.calibrate().scaleByRole, { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 }, 'defaults are not mutated')
+  assert.deepEqual(core.calibrate().scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 3.5 }, 'defaults are not mutated')
 })
 
 test('the priced card carries the calibration factors it used', async () => {
   let { res } = await runFanout(baseArgs({ dryRun: true }), responder())
-  assert.deepEqual(res.card.calib, { pm: 3, scale: 1, scaleByRole: { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 } })
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1, scaleByRole: { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 3.5 } })
   ;({ res } = await runFanout(baseArgs({ dryRun: true, calib: { pm: 3, scale: 1.5, scaleByRole: { verify: 0.2 } } }), responder()))
-  assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 0.6, verify: 0.2, inspect: 0.5, sweep: 0.8 } })
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 1, verify: 0.2, inspect: 0.3, sweep: 2, implement: 3.5 } })
 })
 
 test('medium defaults to rung V2 (0.1.4): one skeptic per medium', async () => {
@@ -891,7 +896,7 @@ test('blocker/high claims are exempt from topK; topK bounds only the remaining V
   // pure rule
   assert.equal(core.topKExempt({ severity: 'high' }, core.DEFAULT_RUNGS), true)
   assert.equal(core.topKExempt({ severity: 'medium', bump: 2 }, core.DEFAULT_RUNGS), false)
-  assert.equal(core.topKExempt({ severity: 'low', parity: true }, core.DEFAULT_RUNGS), true)
+  assert.equal(core.topKExempt({ severity: 'medium', parity: true }, core.DEFAULT_RUNGS), true)
   assert.equal(core.topKExempt({ severity: 'high' }, { ...core.DEFAULT_RUNGS, high: 'V2' }), false, 'a master who lowers high to V2 opts out')
 })
 
@@ -949,7 +954,7 @@ test('price model 3: leak-free defaults', () => {
   assert.equal(K.ultraReadFactor, 4, 'ultracode agents read with Read and still get the nested CLAUDE.md')
   assert.equal(K.verifierInFrac, 0.25)
   assert.equal(K.sweepInFrac, 0.25)
-  assert.deepEqual(K.scaleByRole, { work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 3.5 })
 })
 
 test('sweep is priced on its own role and a fraction of inAvg; the deep critic stays work', async () => {
@@ -962,7 +967,7 @@ test('sweep is priced on its own role and a fraction of inAvg; the deep critic s
   const sweepO = core.agentOpts('worker', K, 'sweep')
   near(M.sweepUsd, 2 * core.estUsd(V.sweepCell, 40000 * 0.25, 0, K, sweepO), 'sweepUsd')
   const raw = core.estUsd(V.sweepCell, 10000, 0, K, { lean: sweepO.lean, cap: sweepO.cap })
-  near(core.estUsd(V.sweepCell, 10000, 0, K, sweepO), raw * 0.8, 'sweep role factor')
+  near(core.estUsd(V.sweepCell, 10000, 0, K, sweepO), raw * 2, 'sweep role factor')
   // runtime: the sweep round commits the same sweep-role estimate
   const { res } = await runFanout({ ...a, sweep: { rounds: 1 }, caps: { pauseUsd: 1000 } }, responder())
   assert.equal(res.ledger.sweeps[0].estUsd, core.estUsd(V.sweepCell, 40000 * 0.25, 0, K, sweepO))
@@ -981,7 +986,7 @@ test('calibrate: scale/scaleByRole only from the current price model; other over
   assert.deepEqual(K.warnings, ['calib from price model none ignored (current 3)'])
   K = core.calibrate({ pm: 2, scaleByRole: { verify: 0.1 } })
   assert.deepEqual(K.warnings, ['calib from price model 2 ignored (current 3)'])
-  assert.equal(K.scaleByRole.verify, 0.35)
+  assert.equal(K.scaleByRole.verify, 0.3)
   K = core.calibrate({ pm: 3, scale: 1.1, scaleByRole: { verify: 0.2 } })
   assert.deepEqual(K.warnings, [])
   assert.equal(K.scale, 1.1)
@@ -992,4 +997,90 @@ test('calibrate: scale/scaleByRole only from the current price model; other over
   assert.ok(res.warnings.includes('calib from price model none ignored (current 3)'), JSON.stringify(res.warnings))
   assert.equal(res.card.calib.pm, 3)
   assert.equal(res.card.calib.scale, 1)
+})
+
+// ───────────────────────── 0.1.5: foreman robustness ─────────────────────────
+
+test('0.1.5: a cited file whose quote the inspector resolved counts as read', async () => {
+  const { res, calls } = await runFanout(baseArgs(), responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/other.py', 3)] }),
+  }))
+  assert.equal(calls.filter(c => tagOf(c.prompt) === 'u1:2').length, 0, 'no re-route for a grepped, resolved cite')
+  assert.equal(res.ledger.units.find(l => l.id === 'u1').outcome, 'ok')
+})
+
+test('0.1.5: without an inspector, cited-but-not-read is a soft signal only', async () => {
+  const cite = conf => okUnit({ files_read: ['src/b.py'], confidence: conf, findings: [finding('src/other.py', 3, 'low')] })
+  let { res, calls } = await runFanout(baseArgs(), responder({ 'u2:1': cite(0.9) }))
+  assert.equal(calls.filter(c => tagOf(c.prompt) === 'u2:2').length, 0, 'confident unit is not re-routed')
+  assert.equal(res.ledger.units.find(l => l.id === 'u2').outcome, 'ok')
+  ;({ res, calls } = await runFanout(baseArgs(), responder({ 'u2:1': cite(0.3) })))
+  assert.equal(calls.filter(c => tagOf(c.prompt) === 'u2:2').length, 1, 'low confidence + soft signal re-routes')
+  assert.match(res.ledger.units.find(l => l.id === 'u2').attempts[0].cls, /capability/)
+})
+
+test('0.1.5: rescue — a failed unit\'s resolved claims go to verification one rung higher', async () => {
+  const a = baseArgs()
+  a.units[0].fb = null
+  const two = [finding('src/a.py', 1, 'medium', 'grounded'), { ...finding('src/a.py', 9, 'medium', 'ungrounded'), evidence: [{ file: 'src/a.py', line: 9, quote: 'nope' }] }]
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], status: 'blocked', blocked_reason: 'too_hard', findings: two }),
+    'i:u1:1': { checks: [{ ref: 'f0.e0', found: true }, { ref: 'f1.e0', found: false }] },
+  }))
+  assert.equal(calls.filter(c => /^u1:/.test(tagOf(c.prompt))).length, 1)
+  assert.equal(res.ledger.units[0].outcome, 'unverified')
+  const [c1, c2] = ['u1.f1', 'u1.f2'].map(cid => res.results.claims.find(c => c.cid === cid))
+  assert.equal(c1.verdict, 'CONFIRMED')
+  assert.equal(c1.rung, 'V3', 'medium V2 + rescue bump')
+  assert.match(c1.rescued, /^producer unit failed: exhausted \(fb null\)/)
+  assert.equal(c2.verdict, 'UNVERIFIED')
+  assert.equal(c2.rescued, null)
+  assert.equal(res.digest.counts.rescued, 1)
+  assert.equal(res.ledger.rescued, 1)
+})
+
+test('0.1.5: rescue also covers a refused re-route', async () => {
+  const a = baseArgs()
+  a.ultra = { ...a.ultra, agents: 20, verifiers: 4 }
+  a.units = [unit('r1'), unit('r2'), unit('r3'), unit('r4'), unit('r5'), unit('r6'), unit('r7'), unit('r8')]
+  a.caps = { pauseUsd: 100, rerouteRate: 0.01, reserveCapPct: 1 }
+  const fail = id => okUnit({ files_read: [`src/${id}.py`], status: 'blocked', blocked_reason: 'too_hard', findings: [finding(`src/${id}.py`, 2, 'high')] })
+  const { res } = await runFanout(a, responder({ 'r1:1': fail('r1'), 'r2:1': fail('r2') }), { sequential: true })
+  const c = res.results.claims.find(x => x.cid === 'r2.f1')
+  assert.match(c.rescued, /^producer unit failed: budget: re-route reserve exhausted/)
+  assert.notEqual(c.verdict, 'UNVERIFIED')
+  assert.equal(c.rung, 'V4')
+})
+
+test('0.1.5 rail: high/blocker rungs need V2 unless verify.waiver says why', async () => {
+  const a = baseArgs()
+  a.verify = { ...a.verify, rungs: { blocker: 'V0', high: 'V0', medium: 'V0', low: 'V0', info: 'V0' } }
+  await rejects(a, /^verify: high\/blocker findings need at least V2; set verify\.waiver to run without/)
+  a.verify.waiver = 'x'.repeat(201)
+  await rejects(a, /^verify: waiver/)
+  a.verify.waiver = 'smoke run on a throwaway branch'
+  const { res } = await runFanout({ ...a, dryRun: true }, responder())
+  assert.equal(res.reason, 'dryRun')
+  assert.equal(res.card.verify.waiver, 'smoke run on a throwaway branch')
+  const run = await runFanout(a, responder())
+  assert.equal(run.res.digest.waiver, 'smoke run on a throwaway branch')
+})
+
+test('0.1.5: the parity V3 floor applies to medium and above only', () => {
+  assert.equal(core.rungFor({ severity: 'low', parity: true }, core.DEFAULT_RUNGS), 'V0')
+  assert.equal(core.rungFor({ severity: 'info', parity: true }, core.DEFAULT_RUNGS), 'V0')
+  assert.equal(core.rungFor({ severity: 'medium', parity: true }, core.DEFAULT_RUNGS), 'V3')
+  assert.equal(core.topKExempt({ severity: 'low', parity: true }, core.DEFAULT_RUNGS), false)
+  assert.equal(core.topKExempt({ severity: 'medium', parity: true }, core.DEFAULT_RUNGS), true)
+})
+
+test('0.1.5: implementers price as their own role', () => {
+  const K = core.calibrate()
+  assert.equal(K.scaleByRole.implement, 3.5)
+  assert.equal(core.agentOpts('implementer', K).role, 'implement')
+  assert.equal(core.agentOpts('worker', K).role, 'work')
+  const cell = { model: 'opus', effort: 'high' }
+  const w = core.estUsd(cell, 20000, 0, K, core.agentOpts('workerCtx', K))
+  const i = core.estUsd(cell, 20000, 0, K, core.agentOpts('implementer', K))
+  assert.ok(i > 3 * w, `implement ${i} vs work ${w}`)
 })

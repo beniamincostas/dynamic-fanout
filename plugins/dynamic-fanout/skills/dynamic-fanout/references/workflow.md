@@ -74,7 +74,7 @@ envelope the implement playbook budgets against.
   //  rounds forced to 0 unless kind is review or research; default rounds quick 0/standard
   //  1/deep 2; default cell = W·min(medium, refEffort)
   reduce: { dedupKey: ['file', 'line'], invariants: [{ name, lhs, rhs, tolCents: 0 }] },
-  caps: { ceilingMult: 0.5, parityBound: false, reserveCapPct: 20, rerouteRate: 0.1,
+  caps: { ceilingMult: 0.5, parityBound: false, reserveCapPct: 20, rerouteRate: 0.2,
           maxOutputTokens: null, pauseUsd: 10, maxAgents: null, ceilingUsd: null },
   overrides: [{ id: 'u2', p: { model: 'opus', effort: 'high' }, fb: null, by: 'user' }],
   //  an override's `p` with no `fb` clears any old fallback (fb becomes null) — a

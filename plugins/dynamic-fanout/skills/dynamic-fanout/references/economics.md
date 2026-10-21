@@ -60,14 +60,14 @@ estUsd = [ (prefix + g·in)        × inPrice × cacheWrite   // everything writ
 | `verifierInFrac` | 0.25 | a verifier (and the critic) is priced at this share of `ultra.inAvg`; skeptics reading through Bash measured 4–10k tokens |
 | `sweepInFrac` | 0.25 | a gap-sweep round is priced at this share of `ultra.inAvg` (it re-reads a slice of scope, not a unit's whole reading) |
 | `ultraReadFactor`, `ultraTurnCap` | 4, 80 | how U's agents are priced (below) |
-| `scaleByRole` | `{work: 0.6, verify: 0.35, inspect: 0.5, sweep: 0.8}` | per-role prior, above the measured fit on purpose (see "What 0.1.3 got wrong") |
+| `scaleByRole` | `{work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 3.5}` | per-role prior at or above the fit learned under price model 3 over 9 runs (work 0.6→1.04→0.81, verify 0.27–0.30, inspect 0.30–0.39, sweep 0.79→3.82, noisy); `implement` (since 0.1.5): implementers keep CLAUDE.md, run test suites and take many turns, and priced as `work` they came out ~3.5× low |
 | `scale` | 1 | global multiplier on top of `scaleByRole`; honoured only from the current price model, neutral otherwise |
 
 - `in` = tokens the agent is planned to read; `ctxTok` = CLAUDE.md tokens on its path
   (0 for `ctx:'omit'`).
 - The agent type comes from the card (`typeKey`): `implement` role → implementer;
   `ctx:'keep'` → worker-ctx; vector T2 → worker-mcp; else worker. Its **role** —
-  `work` (implementer/worker/workerMcp/workerCtx), `verify` (skeptic) or `inspect`
+  `implement` (implementer), `work` (worker/workerMcp/workerCtx), `verify` (skeptic) or `inspect`
   (inspector) — is fixed per type (`ROLE_OF`) and selects which `scaleByRole` entry
   applies; `estUsd`'s `o.role` carries it through. The gap sweep runs on a worker but is
   priced and calibrated as its own role, `sweep` (`agentOpts('worker', K, 'sweep')`).
@@ -189,8 +189,8 @@ expensive**, starving verification further to correct an overrun it had no part 
 | **R** | Σ over units with `fb`: `rerouteRate` × estUsd(fb, in, ctx); floor = the largest single repair; cap = `reserveCapPct`·P; **the floor wins** over the cap; the largest B2 repair is earmarked | foreman |
 | **C** | crew ceiling = 0.5·U; with `parityBound` up to 0.8·U; `--ceiling` sets `caps.ceilingUsd` | rail |
 
-Verifier, sweep and critic agents run `ctx:'omit'` on the lean prefix. `rerouteRate`
-defaults to 0.1, or the observed rate from routing stats once a role cohort has n≥4.
+Verifier, sweep and critic agents run `ctx:'omit'` on the lean prefix.
+`rerouteRate` defaults to 0.2 (since 0.1.5: 7 capability failures in 44 units, ~16%, across 7 runs), or the observed rate from routing stats once a role cohort has n≥4.
 
 ### Verification sizing: `expected` (0.1.2, risk-weighted)
 

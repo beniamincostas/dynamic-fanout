@@ -64,7 +64,7 @@ export const CALIB_MIN = 0.3;
 export const CALIB_MAX = 5;
 // Keep equal to PRICE_MODEL in workflows/fanout.js (a test checks it).
 export const PRICE_MODEL = 3;
-export const ROLES = ['work', 'verify', 'inspect', 'sweep'];
+export const ROLES = ['work', 'verify', 'inspect', 'sweep', 'implement'];
 export const ROLE_CALIB_MIN = 0.1;
 export const ROLE_CALIB_MAX = 10;
 
@@ -284,13 +284,26 @@ const sumEst = (list, key = 'estUsd') => (Array.isArray(list) ? list : []).reduc
  */
 export function estimatedUsdByRole(result) {
   const ledger = result?.ledger ?? {};
-  const attempts = (Array.isArray(ledger.units) ? ledger.units : []).flatMap((u) => u?.attempts ?? []);
+  const implIds = implementIds(result);
+  const units = Array.isArray(ledger.units) ? ledger.units : [];
+  const isImpl = (u) => u?.role === 'implement' || implIds.has(u?.id);
+  const attempts = units.filter((u) => !isImpl(u)).flatMap((u) => u?.attempts ?? []);
+  const implLedger = units.filter(isImpl);
+  // An implement.js result has no foreman ledger: its themes are priced on the card.
+  const cardImpl = (Array.isArray(result?.card?.units) ? result.card.units : []).filter((u) => u?.role === 'implement');
   return {
     work: sumEst(attempts),
     verify: sumEst(ledger.verifiers),
     inspect: sumEst(ledger.inspectors),
     sweep: sumEst(ledger.sweeps),
+    implement: implLedger.length ? sumEst(implLedger.flatMap((u) => u?.attempts ?? [])) : sumEst(cardImpl),
   };
+}
+
+/** Ids of the card's units with role 'implement' (implement themes). Pure. */
+function implementIds(result) {
+  const units = Array.isArray(result?.card?.units) ? result.card.units : [];
+  return new Set(units.filter((u) => u?.role === 'implement').map((u) => u.id));
 }
 
 /**
@@ -300,15 +313,22 @@ export function estimatedUsdByRole(result) {
  * at all) comes back null — the caller skips it rather than treating a true zero as "no
  * data". Pure.
  */
-export function actualUsdByRole(ledgerJson) {
+export function actualUsdByRole(ledgerJson, result) {
   const byKind = ledgerJson && typeof ledgerJson === 'object' ? ledgerJson.byKind : null;
-  if (!byKind || typeof byKind !== 'object') return { work: null, verify: null, inspect: null, sweep: null };
+  if (!byKind || typeof byKind !== 'object') return { work: null, verify: null, inspect: null, sweep: null, implement: null };
   const usd = (k) => Number(byKind[k]?.usd) || 0;
-  const work = ['work', 'critic'].some((k) => k in byKind)
+  let work = ['work', 'critic'].some((k) => k in byKind)
     ? ['work', 'critic'].reduce((t, k) => t + (k in byKind ? usd(k) : 0), 0)
     : null;
+  // Implement themes are tagged like work units: their actual comes out of byKind.work by
+  // unit id (byUnit), for the card's units with role 'implement'.
+  const byUnit = ledgerJson.byUnit && typeof ledgerJson.byUnit === 'object' ? ledgerJson.byUnit : {};
+  const ids = [...implementIds(result)].filter((id) => id in byUnit);
+  const implement = ids.length ? ids.reduce((t, id) => t + (Number(byUnit[id]?.usd) || 0), 0) : null;
+  if (implement !== null && work !== null) work = Math.max(0, work - implement);
   return {
     work,
+    implement,
     verify: 'verifier' in byKind ? usd('verifier') : null,
     inspect: 'inspector' in byKind ? usd('inspector') : null,
     sweep: 'sweep' in byKind ? usd('sweep') : null,
@@ -336,7 +356,7 @@ export function applyCalibrationByRole(stats, { result, ledgerJson }) {
   const pm = pmOf(result);
   if (pm === null) return stats;
   const est = estimatedUsdByRole(result);
-  const act = actualUsdByRole(ledgerJson);
+  const act = actualUsdByRole(ledgerJson, result);
   const cardCalib = result?.card?.calib ?? {};
   const usedByRole = cardCalib.scaleByRole ?? {};
   const usedScale = typeof cardCalib.scale === 'number' ? cardCalib.scale : 1;

@@ -524,21 +524,32 @@ describe('stats', () => {
       const src = fs.readFileSync(path.join(HERE, '..', 'workflows', 'fanout.js'), 'utf8');
       assert.equal(Number(/^const PRICE_MODEL = (\d+)/m.exec(src)[1]), st.PRICE_MODEL);
       assert.equal(st.PRICE_MODEL, 3);
-      assert.deepEqual(st.ROLES, ['work', 'verify', 'inspect', 'sweep']);
+      assert.deepEqual(st.ROLES, ['work', 'verify', 'inspect', 'sweep', 'implement']);
     });
 
     test('estimatedUsdByRole: work = unit attempts, sweep = sweep rounds, verify, inspect', () => {
-      assert.deepEqual(st.estimatedUsdByRole(loadCalibResult()), { work: 2.0, verify: 1.5, inspect: 0.3, sweep: 0.5 });
-      assert.deepEqual(st.estimatedUsdByRole({}), { work: 0, verify: 0, inspect: 0, sweep: 0 });
+      assert.deepEqual(st.estimatedUsdByRole(loadCalibResult()), { work: 2.0, verify: 1.5, inspect: 0.3, sweep: 0.5, implement: 0 });
+      assert.deepEqual(st.estimatedUsdByRole({}), { work: 0, verify: 0, inspect: 0, sweep: 0, implement: 0 });
+    });
+
+    test('0.1.5: implement themes are their own role, mapped from the card units', () => {
+      const result = { card: { calib: { pm: 3 }, units: [{ id: 't1', role: 'implement', estUsd: 0.5 }, { id: 't2', role: 'implement', estUsd: 0.7 }] } };
+      assert.deepEqual(st.estimatedUsdByRole(result), { work: 0, verify: 0, inspect: 0, sweep: 0, implement: 1.2 });
+      const ledgerJson = { byKind: { work: { usd: 5 } }, byUnit: { t1: { usd: 1.7 }, t2: { usd: 2.5 } } };
+      const act = st.actualUsdByRole(ledgerJson, result);
+      assert.equal(act.implement, 4.2);
+      assert.ok(Math.abs(act.work - 0.8) < 1e-9);
+      const stats = st.applyCalibrationByRole(st.emptyStats(), { result, ledgerJson });
+      assert.ok(stats.calib.scaleByRole.implement > 1, 'implement learned from its own ratio');
     });
 
     test('actualUsdByRole reads byKind.{work+critic, sweep, verifier, inspector}; a missing kind is null, not 0', () => {
       assert.deepEqual(
         st.actualUsdByRole({ byKind: { work: { usd: 3 }, critic: { usd: 0.2 }, sweep: { usd: 0.4 }, verifier: { usd: 1 } } }),
-        { work: 3.2, verify: 1, inspect: null, sweep: 0.4 },
+        { work: 3.2, verify: 1, inspect: null, sweep: 0.4, implement: null },
       );
-      assert.deepEqual(st.actualUsdByRole({ totals: { usd: 9.4 } }), { work: null, verify: null, inspect: null, sweep: null });
-      assert.deepEqual(st.actualUsdByRole({ byKind: { inspector: { usd: 0 } } }), { work: null, verify: null, inspect: 0, sweep: null });
+      assert.deepEqual(st.actualUsdByRole({ totals: { usd: 9.4 } }), { work: null, verify: null, inspect: null, sweep: null, implement: null });
+      assert.deepEqual(st.actualUsdByRole({ byKind: { inspector: { usd: 0 } } }), { work: null, verify: null, inspect: 0, sweep: null, implement: null });
     });
 
     test('applyCalibrationByRole: target = used x ratio; the first observation under a pm blends from used', () => {
