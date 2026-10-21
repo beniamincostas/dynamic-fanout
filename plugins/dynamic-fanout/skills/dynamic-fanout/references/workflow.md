@@ -244,7 +244,7 @@ Confidence <0.5 with no soft signal → no rerun; the unit's claims go one verif
 `fb` (delta paid from R) and get no further fallback.
 
 **Inspector:** units whose `check` contains `quote`, and every B2 unit, run an inspector
-call checking that each `{file, line, quote}` exists within ±3 lines (≤40 quotes per
+call checking that each `{file, line, quote}` exists within ±3 lines (≤60 quotes per
 call). It fires once per returned result that has evidence to check — so a unit can get
 up to 3 calls across its run (primary, a capacity slice, a re-route), merged together;
 `price()` only budgets one call per such unit. A result with no evidence items gets no
