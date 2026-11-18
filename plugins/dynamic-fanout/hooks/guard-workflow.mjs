@@ -19,13 +19,34 @@ const DENY_REASON = [
 
 const CALLS_PLUGIN = /\bworkflow\(\s*(['"`])dynamic-fanout:[^'"`]+\1/
 const EXEMPT = /^\s*\/\/\s*dynamic-fanout:\s*exempt\s+(\S.{8,}\S)\s*$/m
-const META_NAME = /export\s+const\s+meta\s*=\s*\{[\s\S]*?\bname\s*:\s*(['"`])([^'"`]+)\1/
 
-// A commented-out plugin call does not route anything: whole-line // comments and /* */ blocks
-// that start a line are removed before the plugin-call test (the exempt marker is read from the
-// original script).
+// A commented-out plugin call does not route anything: // comments (whole-line, or trailing
+// after whitespace, `;`, `)` or `}`) and /* */ blocks that start a line are removed before the
+// plugin-call test. The exempt marker is read from the original script.
 function code(src) {
-  return src.replace(/^\s*\/\*[\s\S]*?\*\//gm, '').replace(/^\s*\/\/.*$/gm, '')
+  return src.replace(/^\s*\/\*[\s\S]*?\*\//gm, '').replace(/(^|[\s;)}])\/\/.*$/gm, '$1')
+}
+
+// The top-level `name` of `export const meta = {...}`: a scanner that skips strings and nested
+// braces/brackets, so a `name:` inside a string, a nested object or code after meta never counts.
+function metaName(src) {
+  const m = /export\s+const\s+meta\s*=\s*\{/.exec(src)
+  if (!m) return null
+  const key = /name\s*:\s*(['"`])((?:\\.|(?!\1)[^\\])*)\1/y
+  let depth = 1, q = null
+  for (let i = m.index + m[0].length; i < src.length && depth > 0; i++) {
+    const ch = src[i]
+    if (q) { if (ch === '\\') i++; else if (ch === q) q = null; continue }
+    if (ch === '"' || ch === "'" || ch === '`') { q = ch; continue }
+    if ('{[('.includes(ch)) { depth++; continue }
+    if ('}])'.includes(ch)) { depth--; continue }
+    if (depth === 1 && ch === 'n' && /[{,]\s*$/.test(src.slice(Math.max(0, i - 200), i))) {
+      key.lastIndex = i
+      const k = key.exec(src)
+      if (k) return k[2]
+    }
+  }
+  return null
 }
 
 // A saved workflow is registered under its meta.name, not its file name (a file fileA.js with
@@ -44,9 +65,9 @@ function savedWorkflow(name, cwd) {
     for (const f of files) {
       let src
       try { src = readFileSync(join(dir, f), 'utf8') } catch { continue }
-      const m = META_NAME.exec(src)
-      if (m && m[2] === name) return src
-      if (!m && byFile === null && f.replace(/\.m?js$/, '') === name) byFile = src
+      const mn = metaName(src)
+      if (mn !== null && mn === name) return src
+      if (mn === null && byFile === null && f.replace(/\.m?js$/, '') === name) byFile = src
     }
   }
   return byFile
@@ -59,7 +80,7 @@ function decide(input) {
   // plugin name is what runs and is what gets guarded.
   let script = null
   if (typeof ti.scriptPath === 'string' && ti.scriptPath) script = readFileSync(resolve(cwd, ti.scriptPath), 'utf8')
-  else if (typeof ti.script === 'string') script = ti.script
+  else if (typeof ti.script === 'string' && ti.script.trim()) script = ti.script
   else if (typeof ti.name === 'string' && ti.name) {
     if (ti.name.startsWith('dynamic-fanout:')) return null
     script = savedWorkflow(ti.name, cwd)

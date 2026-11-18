@@ -101,7 +101,11 @@ item was spot-checked in the code before it was fixed. Fixes, with tests:
   - It finds a saved workflow by `meta.name`, in the project root (`CLAUDE_PROJECT_DIR`) as
     well as the current directory. Before, a file whose name differed from its `meta.name`
     passed unchecked.
-  - A commented-out `workflow('dynamic-fanout:…')` no longer counts as routed.
+  - A commented-out `workflow('dynamic-fanout:…')` no longer counts as routed: whole-line and
+    trailing `//` comments, and `/* */` blocks that start a line, are ignored for that test.
+  - The `meta.name` is read by a small scanner of meta's top-level keys, so a `name:` in a
+    string, a nested object or code after meta never counts. An empty `script` next to a plugin
+    name counts as no script.
   - A call written with a template literal is recognised.
 - **OVERSTATED rule.** A V4 panel that splits CONFIRMED vs a lower OVERSTATED stays OVERSTATED.
   Before, the panel's highest rating turned it into CONFIRMED and hid the inflation signal. An
