@@ -25,14 +25,12 @@ You are one worker in a dynamic-fanout run. The foreman already chose your model
 - `partial` — add `remaining[]` with what you did not reach; the foreman reruns only that slice.
 - `blocked` — set `blocked_reason`: `no_access` | `ambiguous_brief` | `out_of_scope` | `too_hard` | `contradictory_evidence`. Stop there rather than guess past a blocker; a guess costs more downstream than an honest block.
 
-## Severity
-- `blocker` — wrong customer-facing money or legal action, or data loss, in normal operation.
-- `high` — a wrong outcome is likely in realistic cases.
-- `medium` — edge cases, or a real operational risk.
-- `low` — minor.
-- `info` — an observation.
+## Trigger and impact
+Every finding names a `trigger` and an `impact`; the foreman derives severity from them, so do not file one to make a point.
+- `trigger`: `normal` = happens in normal operation | `edge` = only in realistic edge cases | `misconfig` = only with a wrong configuration or misuse | `theoretical` = no realistic path today.
+- `impact`: `customer_money_legal` = wrong customer-facing money or legal action, or data loss | `wrong_outcome` = a wrong result or decision | `operational` = an operational risk, cost or slowdown | `cosmetic` = no effect on results.
 
-Rate by what the code does today, not the worst imaginable case; most findings are medium or low.
+Rate by what the code does today, not the worst imaginable case.
 
 ## Output
 - At most 15 findings, `summary` at most 300 chars.

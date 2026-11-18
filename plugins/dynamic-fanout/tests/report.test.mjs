@@ -156,3 +156,20 @@ test('report: legend for PLAUSIBLE, filed->verified severity, header counted by 
   assert.match(text, /u1\.f1 {2}high {2}CONFIRMED/);
   assert.match(text.split('\n')[0], /1 high \/ 0 medium \/ 0 low \/ 1 info/);
 });
+
+test('report (0.1.7): OVERSTATED in the legend and header; trigger/impact shown, filed->verified', () => {
+  const doc = { result: {
+    digest: { counts: { units: 1, ok: 1, okRerouted: 0, okPromoted: 0, confirmed: 0, plausible: 0, refuted: 0, overstated: 1, unverifiedClaims: 0, pending: 0 } },
+    results: { units: {}, claims: [
+      { cid: 'u1.f1', unit: 'u1', severity: 'high', verifiedSeverity: 'low', trigger: 'normal', impact: 'wrong_outcome', verifiedTrigger: 'misconfig', verifiedImpact: 'wrong_outcome',
+        title: 'retry loses a row', verdict: 'OVERSTATED', rung: 'V3', evidence: [{ file: 'svc/b.py', line: 4, quote: 'q' }], reason: 'only with retries off' },
+    ] },
+  } };
+  const rep = rpt.build(doc);
+  assert.equal(rep.header.claimsByVerdict.overstated, 1);
+  const text = rpt.formatText(rep);
+  assert.match(text.split('\n')[0], /1 overstated/);
+  assert.ok(rpt.LEGEND.includes('OVERSTATED = real, but'), 'legend explains OVERSTATED');
+  assert.ok(text.includes(rpt.LEGEND));
+  assert.match(text, /u1\.f1 {2}high->low \[normal\/wrong_outcome->misconfig\/wrong_outcome\] {2}OVERSTATED\(V3\)/);
+});

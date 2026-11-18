@@ -713,3 +713,25 @@ describe('stats', () => {
     assert.match(st.defaultFile({}), /\.claude[\\/]dynamic-fanout[\\/]routing-stats\.json$/);
   });
 });
+
+describe('check-evidence: OVERSTATED (0.1.7)', () => {
+  test('an OVERSTATED verdict whose support quote does not resolve becomes PLAUSIBLE; counts.overstated is patched', () => {
+    const ev = { file: 'src/billing.py', line: 3, quote: 'GRACE_MINUTES = 30' };
+    const res = { digest: { counts: { confirmed: 0, plausible: 0, refuted: 0, overstated: 2, unverifiedClaims: 0 } }, results: { claims: [
+      { cid: 'o1', verdict: 'OVERSTATED', reason: 'r', evidence: [ev], support: { file: 'src/billing.py', line: 3, quote: 'GRACE_MINUTES = 30' } },
+      { cid: 'o2', verdict: 'OVERSTATED', reason: 'r', evidence: [ev], support: { file: 'src/billing.py', line: 3, quote: 'invented support' } },
+    ] } };
+    const { report, claims } = ce.audit(res, { root: ROOT });
+    assert.deepEqual(claims.map((c) => c.verdict), ['OVERSTATED', 'PLAUSIBLE']);
+    assert.deepEqual(report.downgrades.map((d) => [d.cid, d.from, d.to, d.reason]), [['o2', 'OVERSTATED', 'PLAUSIBLE', 'support']]);
+    const out = ce.patchOutput(res, claims, report);
+    assert.equal(out.digest.counts.overstated, 1);
+    assert.equal(out.digest.counts.plausible, 1);
+  });
+
+  test('an OVERSTATED verdict with an unresolved evidence quote ends UNVERIFIED', () => {
+    const res = { results: { claims: [{ cid: 'o3', verdict: 'OVERSTATED', reason: 'r', support_cmd: 'grep -n x',
+      evidence: [{ file: 'src/billing.py', line: 1, quote: 'nowhere' }] }] } };
+    assert.equal(ce.audit(res, { root: ROOT }).claims[0].verdict, 'UNVERIFIED');
+  });
+});
