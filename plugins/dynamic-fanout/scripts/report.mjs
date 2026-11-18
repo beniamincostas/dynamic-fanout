@@ -111,7 +111,9 @@ function formatClaim(c) {
   const merged = Array.isArray(c.merged) && c.merged.length
     ? `\n      merged: ${c.merged.map((m) => `${m.cid || '?'} ${m.title || ''}`.trim()).join('; ')}`
     : '';
-  return line + merged;
+  // A critic's correction to this finding (0.1.7), shown even when no skeptic addressed it.
+  const corr = c.criticCorrection ? `\n      critic: ${c.criticCorrection}` : '';
+  return line + merged + corr;
 }
 
 export function formatText(rep) {

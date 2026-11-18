@@ -146,6 +146,14 @@ test('formatText: a merged claim lists the titles it absorbed, so a wrong merge 
   assert.match(text, /merged: u2\.f2 split drops the remainder/)
 })
 
+test('formatText: a critic correction is shown under its claim', () => {
+  const doc = { result: { results: { units: {}, claims: [
+    { cid: 'u1.f1', unit: 'u1', severity: 'high', title: 'loop skips last item', verdict: 'CONFIRMED', rung: 'V3',
+      evidence: [{ file: 'svc/b.py', line: 16, quote: 'q' }], criticCorrection: 'value wrong: total([500]) is 514, not 515' },
+  ] } } }
+  assert.match(rpt.formatText(rpt.build(doc)), /\n\s+critic: value wrong: total\(\[500\]\) is 514, not 515/)
+})
+
 test('report: legend for PLAUSIBLE, filed->verified severity, header counted by verified severity', () => {
   const rep = rpt.build(RESULT);
   // u1.f1 high (no verifiedSeverity) counts as high; u1.f2 filed low, verified info counts as info.

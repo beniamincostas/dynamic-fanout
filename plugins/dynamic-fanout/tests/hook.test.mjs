@@ -8,8 +8,9 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HOOK = fileURLToPath(new URL('../hooks/guard-workflow.mjs', import.meta.url))
-const run = (input) => {
-  const r = spawnSync(process.execPath, [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' })
+const run = (input, env = {}) => {
+  const base = { ...process.env }; delete base.CLAUDE_PROJECT_DIR
+  const r = spawnSync(process.execPath, [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', env: { ...base, ...env } })
   return { code: r.status, out: r.stdout.trim(), json: r.stdout.trim() ? JSON.parse(r.stdout) : null }
 }
 const wf = (tool_input) => ({ hook_event_name: 'PreToolUse', tool_name: 'Workflow', tool_input })
@@ -91,3 +92,40 @@ test('guard: a named workflow it cannot read (another plugin, built-in) passes w
 })
 
 function require_mkdir(p) { mkdirSync(p, { recursive: true }) }
+
+test('guard: a saved workflow is found by its meta.name, the name the Workflow tool registers', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'df-hook-meta-'))
+  const wfd = join(dir, '.claude', 'workflows'); require_mkdir(wfd)
+  writeFileSync(join(wfd, 'fileA.js'), "export const meta = { name: 'nameB', description: 'x' }\nawait agent('review everything')\n")
+  writeFileSync(join(wfd, 'fileC.js'), "export const meta = { name: 'routedC', description: 'x' }\nawait workflow('dynamic-fanout:fanout', a)\n")
+  assert.equal(run({ ...wf({ name: 'nameB' }), cwd: dir }).json.hookSpecificOutput.permissionDecision, 'deny')
+  assert.equal(run({ ...wf({ name: 'routedC' }), cwd: dir }).out, '')
+  // The file name is not a registered name when the file has a meta name: nothing to guard, a note.
+  assert.match(run({ ...wf({ name: 'fileA' }), cwd: dir }).json.hookSpecificOutput.additionalContext, /not a saved script/)
+})
+
+test('guard: saved workflows are looked up in the project root too, after a cd', () => {
+  const proj = mkdtempSync(join(tmpdir(), 'df-hook-proj-'))
+  const wfd = join(proj, '.claude', 'workflows'); require_mkdir(wfd)
+  writeFileSync(join(wfd, 'r.js'), "export const meta = { name: 'proj-review', description: 'x' }\nawait agent('review')\n")
+  const sub = join(proj, 'sub'); require_mkdir(sub)
+  const r = run({ ...wf({ name: 'proj-review' }), cwd: sub }, { CLAUDE_PROJECT_DIR: proj })
+  assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny')
+})
+
+test('guard: inputs are checked in the order the Workflow tool runs them (scriptPath, script, name)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'df-hook-order-'))
+  const bad = join(dir, 'plain.js'); writeFileSync(bad, "await agent('review everything')\n")
+  const deny = i => assert.equal(run(wf(i)).json.hookSpecificOutput.permissionDecision, 'deny', JSON.stringify(i))
+  deny({ name: 'dynamic-fanout:fanout', scriptPath: bad })
+  deny({ script: "await workflow('dynamic-fanout:fanout', a)", scriptPath: bad })
+  deny({ name: 'dynamic-fanout:fanout', script: "await agent('x')" })
+})
+
+test('guard: a commented-out plugin call does not count; a template-literal call does', () => {
+  const deny = s => assert.equal(run(wf({ script: s })).json.hookSpecificOutput.permissionDecision, 'deny', s)
+  deny("// was: await workflow('dynamic-fanout:fanout', a)\nawait agent('review everything')\n")
+  deny("/* old:\nawait workflow('dynamic-fanout:fanout', a)\n*/\nawait agent('review everything')\n")
+  assert.equal(run(wf({ script: 'await workflow(`dynamic-fanout:fanout`, args)' })).out, '')
+  assert.equal(run(wf({ script: "const r = await workflow('dynamic-fanout:fanout', args) // routed" })).out, '')
+})

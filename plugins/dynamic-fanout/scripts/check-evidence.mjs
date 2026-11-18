@@ -10,7 +10,7 @@
 // REFUTED verdicts: an unresolved counter_quote downgrades REFUTED -> PLAUSIBLE.
 // CONFIRMED / OVERSTATED verdicts: a skeptic's own `support` quote is audited exactly like
 // counter_quote; an unresolved one downgrades CONFIRMED or OVERSTATED -> PLAUSIBLE (reason 'support').
-// OVERSTATED (0.1.7) = real, but the trigger, scope or impact is overstated: a real finding. support_cmd (the
+// OVERSTATED (0.1.7) = real, but filed too high (a lower trigger x impact): a real finding. support_cmd (the
 // empty search behind an absence claim) is not audited, and a missing support is the
 // foreman's job (it never lets an unsupported CONFIRMED through).
 // CONFIRMED / OVERSTATED / PLAUSIBLE with any unresolved evidence quote -> UNVERIFIED (reason 'evidence').

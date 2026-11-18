@@ -39,7 +39,7 @@ const SEVERITY_MATRIX = {
   operational: { normal: 'medium', edge: 'low', misconfig: 'low', theoretical: 'info' },
   cosmetic: { normal: 'low', edge: 'info', misconfig: 'info', theoretical: 'info' },
 }
-// OVERSTATED = real, but the trigger, scope or impact is overstated: it counts as a real finding.
+// OVERSTATED = real, but filed too high (a lower trigger x impact): it counts as a real finding.
 // REFUTED is reserved for claims the evidence shows false (counter_quote).
 const VERDICTS = ['CONFIRMED', 'OVERSTATED', 'REFUTED', 'PLAUSIBLE', 'UNVERIFIABLE']
 const RUNGS = ['V0', 'V1', 'V2', 'V3', 'V4']
@@ -845,7 +845,7 @@ function dedupClaims(claims, keys) {
     if (Number.isInteger(c.floor)) g.floor = Math.max(Number.isInteger(g.floor) ? g.floor : -1, c.floor)
     if (c.producer && g.producer && mr(c.producer.model) > mr(g.producer.model)) g.producer = c.producer
     // Critic notes of a merged claim reach the one skeptic that judges the group.
-    for (const k of ['criticNote', 'criticCorrection']) if (c[k] && c[k] !== g[k]) g[k] = [g[k], c[k]].filter(Boolean).join(' | ')
+    for (const k of ['criticNote', 'criticCorrection']) if (c[k]) g[k] = [...new Set([...(g[k] ? String(g[k]).split(' | ') : []), ...String(c[k]).split(' | ')])].join(' | ')
   }
   return out
 }
@@ -1111,7 +1111,7 @@ const SKEPTIC_RULES = [
 const UNIT_CRITIC_RULES = [
   'You are an outcome critic. You judge whether one unit\'s result covers its brief and its scope; you do not redo the work and you do not verify each finding.',
   '- coverage: your honest estimate (0-1) of the share of the real issues in this scope that the findings below cover.',
-  '- gaps: parts of the brief or scope the unit did not cover (a file not read, a part of the brief skipped, a class of issue never looked for). material = true only when a real issue there is likely; add evidence {file, line, quote} when you saw one. At most 6, most important first.',
+  '- gaps: parts of the brief or scope the unit did not cover (a file not read, a part of the brief skipped, a class of issue never looked for). material = true only when a real issue there is likely; add evidence {file, line, quote} when you saw one. At most 6, most important first. Do not list areas you checked and found fine, or parts outside the brief: they are not gaps.',
   '- overstated: findings (by fid) that are real but whose trigger or impact is filed too high, with why. Judge by the trigger and impact scale below. A wrong example input or failure value in an otherwise right finding is not overstated: list it under gaps with material false and evidence at that finding\'s line, so its skeptic checks the correction.',
   'Spot-check with Bash (`grep -n`, `nl -ba FILE | sed -n \'A,Bp\'`); never read whole files. Read-only: never edit anything. Your final answer is the structured output only.',
   SEVERITY_RUBRIC,
@@ -1296,6 +1296,16 @@ async function inspect(u, res, n) {
   if (!r) { ledger.inspectors.push({ tag, unit: u.id, quotes: batch.length, resolved: null, estUsd: est, skipped: 'inspector returned nothing' }); return { total: batch.length, resolved: null, rate: null, skipped: 'inspector failed' } }
   const found = new Set((r.checks || []).filter(c => c && c.found).map(c => c.ref))
   const hits = batch.filter(b => found.has(b.ref))
+  // A quote the inspector found elsewhere in its file (actual_line) is real but cited at the wrong
+  // line: correct the evidence line, so the skeptic reads the right place and check-evidence.mjs
+  // re-checks it there at close. The unit's quote rate still counts it as unresolved.
+  const at = new Map((r.checks || []).filter(c => c && !c.found && Number.isInteger(c.actual_line) && c.actual_line > 0).map(c => [c.ref, c.actual_line]))
+  const moved = batch.filter(b => at.has(b.ref))
+  for (const b of moved) {
+    const m = /^f(\d+)\.e(\d+)$/.exec(b.ref)
+    const e = m && ((res.findings || [])[Number(m[1])] || {}).evidence
+    if (e && e[Number(m[2])]) e[Number(m[2])].line = at.get(b.ref)
+  }
   const resolved = hits.length
   ledger.inspectors.push({ tag, unit: u.id, quotes: batch.length, resolved, estUsd: est })
   if (items.length > batch.length) warnings.push(`inspect ${u.id}: ${items.length - batch.length} quote(s) beyond ${MAX_INSPECT_QUOTES} left to check-evidence.mjs`)
@@ -1304,7 +1314,7 @@ async function inspect(u, res, n) {
   return {
     total: batch.length, resolved, rate: resolved / batch.length,
     resolvedFiles: [...new Set(hits.map(b => b.file))], resolvedKeys: hits.map(b => `${b.file}|${b.quote}`),
-    checkedKeys: batch.map(b => `${b.file}|${b.quote}`),
+    checkedKeys: batch.map(b => `${b.file}|${b.quote}`), relocatedKeys: moved.map(b => `${b.file}|${b.quote}`),
   }
 }
 
@@ -1429,15 +1439,28 @@ async function runUnit(u) {
   // Non-material gaps are not escalated, but they are kept: a gap whose evidence points at a
   // finding (same file, within 3 lines) reaches that finding's skeptic as a correction to check
   // (a miscomputed failure value, a wider trigger); the rest are listed in digest.notes.
-  const keepNotes = (gaps, res) => {
-    for (const g of gaps) {
-      const e = g.evidence
-      const file = e && e.file ? toScope(e.file, u.scope.files) : null
-      const line = e && Number.isFinite(e.line) ? e.line : null
-      const f = file && line !== null && (res.findings || []).find(x => (x.evidence || []).some(v => v && toScope(v.file, u.scope.files) === file && Number.isFinite(v.line) && Math.abs(v.line - line) <= 3))
-      if (f) f.criticCorrection = [f.criticCorrection, `${g.area}: ${g.why}`].filter(Boolean).join(' | ')
-      else notes.push({ unit: u.id, area: g.area, why: g.why, file, line })
+  // attach(): a non-material gap goes to the NEAREST finding (same file, within 3 lines) as a
+  // correction; returns false when no finding is that close.
+  const gapAt = g => {
+    const e = g.evidence
+    return { file: e && e.file ? toScope(e.file, u.scope.files) : null, line: e && Number.isFinite(e.line) ? e.line : null }
+  }
+  const attach = (g, res) => {
+    if (g.material) return false
+    const { file, line } = gapAt(g)
+    if (!file || line === null) return false
+    let f = null, best = Infinity
+    for (const x of res.findings || []) for (const v of x.evidence || []) {
+      if (!v || toScope(v.file, u.scope.files) !== file || !Number.isFinite(v.line)) continue
+      const d = Math.abs(v.line - line)
+      if (d <= 3 && d < best) { best = d; f = x }
     }
+    if (!f) return false
+    f.criticCorrection = [f.criticCorrection, `${g.area}: ${g.why}`].filter(Boolean).join(' | ')
+    return true
+  }
+  const keepNotes = (gaps, res) => {
+    for (const g of gaps) if (!attach(g, res)) notes.push({ unit: u.id, area: g.area, why: g.why, ...gapAt(g) })
   }
   const gate = async (outcome, res, c, producer) => {
     if (!u.critic) return finishUnit(L, u, outcome, null, res, c, producer)
@@ -1451,7 +1474,10 @@ async function runUnit(u) {
     }
     const lowCov = recallCritical(u) && typeof k.coverage === 'number' && k.coverage < 0.75
     if (!k.gaps.some(g => g.material) && !lowCov) { keepNotes(k.gaps, res); return finishUnit(L, u, outcome, null, res, c, producer) }
-    const gaps = k.gaps.length ? k.gaps : [{ area: 'scope coverage', why: `critic coverage ${k.coverage}`, material: false, evidence: null }]
+    // A correction to an existing finding is not a coverage gap: it goes to that finding, and only
+    // the rest are re-run (or left uncovered).
+    const toRun = k.gaps.filter(g => !attach(g, res))
+    const gaps = toRun.length ? toRun : [{ area: 'scope coverage', why: `critic coverage ${k.coverage}`, material: false, evidence: null }]
     L.gapsFound = gaps.length
     const leave = cause => { for (const g of gaps) uncovered.push({ unit: u.id, area: g.area, why: g.why, cause }) }
     if (outcome === 'ok-rerouted') { leave('unit already re-routed for capability (one re-route per unit)'); return finishUnit(L, u, outcome, null, res, c, producer) }
@@ -1470,7 +1496,8 @@ async function runUnit(u) {
     // Only a finding whose quotes were all checked and none resolved is dropped; quotes beyond
     // the inspector's batch stay for check-evidence.mjs at close.
     if (gi && Array.isArray(gi.resolvedKeys) && Array.isArray(gi.checkedKeys)) {
-      const ok = new Set(gi.resolvedKeys), seen = new Set(gi.checkedKeys)
+      // A quote found at another line (relocated by the inspector) is grounded.
+      const ok = new Set([...gi.resolvedKeys, ...(gi.relocatedKeys || [])]), seen = new Set(gi.checkedKeys)
       const kept = []
       for (const f of more.findings || []) {
         const keys = (f.evidence || []).filter(Boolean).map(e => `${toScope(e.file, u.scope.files)}|${e.quote}`)
@@ -1663,11 +1690,13 @@ async function runBatch(b) {
     const top = rated.length ? rated.reduce((a, x) => (sevRank(ratedSeverity(x)) > sevRank(ratedSeverity(a)) ? x : a)) : null
     c.verifiedSeverity = top ? ratedSeverity(top) : c.severity
     if (top && TRIGGERS.includes(top.trigger) && IMPACTS.includes(top.impact)) Object.assign(c, { verifiedTrigger: top.trigger, verifiedImpact: top.impact })
-    // OVERSTATED means filed too high. When the skeptic's own trigger x impact does not rate the
-    // claim lower than filed, it is real at its filed severity with corrected details: CONFIRMED,
-    // so routing's quality learning (refuted + overstated) is not fed a false inflation signal.
-    if (c.verdict === 'OVERSTATED' && sevRank(c.verifiedSeverity) >= sevRank(c.severity)) {
-      Object.assign(c, { verdict: 'CONFIRMED', reason: `confirmed at its filed severity; details corrected: ${c.reason || ''}`.trim().slice(0, 600) })
+    // OVERSTATED means filed too high. It stands when a lens that said OVERSTATED rated the claim
+    // below its filed severity (in a V4 panel the other lens may still rate it at filed severity:
+    // the split stays visible). Otherwise the claim is real with corrected details: CONFIRMED, so
+    // routing's quality learning (refuted + overstated) is not fed a false inflation signal.
+    if (c.verdict === 'OVERSTATED' && !got.some(x => x && x.verdict === 'OVERSTATED' && ratedSeverity(x) && sevRank(ratedSeverity(x)) < sevRank(c.severity))) {
+      const at = sevRank(c.verifiedSeverity) > sevRank(c.severity) ? `rated ${c.verifiedSeverity}, above its filed ${c.severity}` : 'at its filed severity'
+      Object.assign(c, { verdict: 'CONFIRMED', reason: `confirmed ${at}; details corrected: ${c.reason || ''}`.trim().slice(0, 600) })
     }
   }
 }
@@ -1742,6 +1771,13 @@ if (V.stage !== 'verify') {
 if (V.stage !== 'work') {
   phase('Verify')
   await verify(claims)
+  // A correction on a claim no skeptic judged (rung V0/V1, cut by topK, verifier failed, unit
+  // unverified) reached nobody: list it in digest.notes with its claim id.
+  for (const c of claims) {
+    if (!c.criticCorrection || /·/.test(c.verdictBy || '')) continue
+    const e = (c.evidence || [])[0] || {}
+    notes.push({ unit: c.unit, cid: c.cid, area: `correction to ${c.cid}; no skeptic judged it (${c.verdictBy || c.verdict || 'unverified'})`, why: c.criticCorrection, file: e.file || null, line: Number.isFinite(e.line) ? e.line : null })
+  }
   if (A.depth === 'deep') critique = await critic(claims)
 } else {
   for (const c of claims) if (!c.verdict) c.verdict = 'PENDING'

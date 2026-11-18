@@ -89,6 +89,39 @@ failure value, and one showed that a sign bug reached further than reported. Now
   - the skeptic rules say that a wrong example value or title at the same severity is
     CONFIRMED.
 
+### Lens review of the follow-ups
+The follow-up commits were reviewed through the skill's solo path: the master's own pass plus
+two opus lens agents (A: boundaries and time; B: inputs and data). A headless probe settled one
+open question: a saved workflow is registered under its `meta.name`, not its file name. Every
+item was spot-checked in the code before it was fixed. Fixes, with tests:
+- **Guard hook.**
+  - It checks inputs in the tool's order (`scriptPath`, then `script`, then `name`). Before,
+    a plugin name or plugin-calling inline script next to a plain `scriptPath` was allowed
+    while the plain file ran.
+  - It finds a saved workflow by `meta.name`, in the project root (`CLAUDE_PROJECT_DIR`) as
+    well as the current directory. Before, a file whose name differed from its `meta.name`
+    passed unchecked.
+  - A commented-out `workflow('dynamic-fanout:…')` no longer counts as routed.
+  - A call written with a template literal is recognised.
+- **OVERSTATED rule.** A V4 panel that splits CONFIRMED vs a lower OVERSTATED stays OVERSTATED.
+  Before, the panel's highest rating turned it into CONFIRMED and hid the inflation signal. An
+  OVERSTATED rated above filed now says so in its reason.
+- **Critic corrections.**
+  - A correction goes to the nearest finding.
+  - It is kept out of a gap re-run.
+  - If no skeptic judges its claim (V0/V1, topK, failed verifier), it is listed in
+    `digest.notes` with the claim id.
+  - `report.mjs` prints it under the claim.
+  - Dedup joins note parts without repeating one.
+  - The critic is told not to list areas it checked and found fine as gaps.
+- **Relocated quotes.** A quote the inspector finds at another line is relocated (evidence line
+  corrected). A gap finding citing it is kept instead of dropped. Before, gap findings were held
+  to a stricter standard than primary ones.
+- Stale OVERSTATED comments in `fanout.js` and `check-evidence.mjs` are updated.
+
+Not changed: a plugin call quoted inside a prompt string still counts as routed (rare; the
+hook does not parse JavaScript).
+
 ## dynamic-fanout 0.1.6 — 2026-10-21
 
 From one production run: a UX and automation review of a report workbook (3 units, 63 claims,

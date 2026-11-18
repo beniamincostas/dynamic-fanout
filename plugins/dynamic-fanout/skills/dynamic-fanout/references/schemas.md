@@ -77,8 +77,10 @@ a capability failure; <50 % selects `redo` mode.
 `verdict ∈ CONFIRMED | OVERSTATED | REFUTED | PLAUSIBLE | UNVERIFIABLE`. OVERSTATED (0.1.7) =
 real, but the trigger or impact is filed too high: it needs support and a corrected
 trigger/impact (else PLAUSIBLE) and counts as a real finding (`digest.counts.overstated`). An
-OVERSTATED whose corrected pair does not rate the claim lower than filed becomes CONFIRMED
-("confirmed at its filed severity; details corrected: …").
+OVERSTATED becomes CONFIRMED ("confirmed at its filed severity; details corrected: …", or
+"confirmed rated X, above its filed Y; …") unless a lens that said OVERSTATED rated the claim
+below its filed severity; in a V4 panel that splits CONFIRMED vs a lower OVERSTATED, the
+verdict stays OVERSTATED while `verifiedSeverity` keeps the higher lens's rating.
 REFUTED is reserved for claims the evidence shows false: a REFUTED verdict without a
 `counter_quote {file, line, quote}` is kept as PLAUSIBLE; a CONFIRMED or OVERSTATED verdict without the
 skeptic's own `support {file, line, quote}` (a verbatim quote it found) or, for an absence
