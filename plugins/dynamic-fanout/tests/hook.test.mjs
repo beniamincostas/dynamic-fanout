@@ -129,3 +129,27 @@ test('guard: a commented-out plugin call does not count; a template-literal call
   assert.equal(run(wf({ script: 'await workflow(`dynamic-fanout:fanout`, args)' })).out, '')
   assert.equal(run(wf({ script: "const r = await workflow('dynamic-fanout:fanout', args) // routed" })).out, '')
 })
+
+test('guard (verification follow-up): empty script next to a plugin name is a plugin call', () => {
+  assert.equal(run(wf({ name: 'dynamic-fanout:fanout', script: '' })).out, '')
+})
+
+test('guard (verification follow-up): a trailing comment with a plugin call does not count', () => {
+  const deny = s => assert.equal(run(wf({ script: s })).json.hookSpecificOutput.permissionDecision, 'deny', s)
+  deny("await agent('review everything') // workflow('dynamic-fanout:fanout', a)\n")
+  deny("await agent('review everything'); // workflow('dynamic-fanout:fanout', a)\n")
+  // a URL in a string is not a comment: the real call after it still counts
+  assert.equal(run(wf({ script: "const u = 'https://x.test/a'; await workflow('dynamic-fanout:fanout', a)" })).out, '')
+})
+
+test('guard (verification follow-up): only the top-level meta name counts', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'df-hook-meta2-'))
+  const wfd = join(dir, '.claude', 'workflows'); require_mkdir(wfd)
+  // meta without a name: the file counts under its basename, even with a later { name: ... }
+  writeFileSync(join(wfd, 'foo.js'), "export const meta = { description: 'x' }\nconst o = { name: 'reviewer' }\nawait agent('x')\n")
+  // a name inside a string or a nested object before the top-level key does not count
+  writeFileSync(join(wfd, 'bar.js'), "export const meta = { description: 'name: \"fake\"', phases: [{ name: 'inner' }], name: 'realBar' }\nawait agent('x')\n")
+  const deny = n => assert.equal(run({ ...wf({ name: n }), cwd: dir }).json.hookSpecificOutput.permissionDecision, 'deny', n)
+  deny('foo'); deny('realBar')
+  for (const n of ['reviewer', 'fake', 'inner']) assert.match(run({ ...wf({ name: n }), cwd: dir }).json.hookSpecificOutput.additionalContext, /not a saved script/, n)
+})
