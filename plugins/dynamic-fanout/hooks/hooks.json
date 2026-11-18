@@ -1,0 +1,16 @@
+{
+  "description": "dynamic-fanout guard: a Workflow script must go through the dynamic-fanout quality loop, or carry an explicit exempt marker.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/guard-workflow.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -93,6 +93,15 @@ skeptic's own pair; the severity derived from it is stored as the claim's `verif
 | operational | medium | low | low | info |
 | cosmetic | low | info | info | info |
 
+## UNIT_CRITIC: the per-unit outcome critic (0.1.7)
+
+`{ coverage: 0..1, gaps: ≤6 × {area, why, material, evidence?}, overstated: [{fid, why}] }`.
+`coverage` = share of the scope's real issues the findings cover. `material: true` on a gap,
+or coverage < 0.75 on a recall-critical unit (V0 or B≥1), triggers the unit's one gap re-run;
+`fid` names a finding (`f<n>`, its place in the unit's list) that is real but filed too high: it is verified one
+rung higher, with `why` passed to the skeptic. A critic that returns nothing is listed in
+`dropped`, never read as "no gaps".
+
 ## CRITIC: deep runs only
 
 `{ missing: ≤8 × {what, why, suggestion?} }`, returned in `digest.critic` for the master.

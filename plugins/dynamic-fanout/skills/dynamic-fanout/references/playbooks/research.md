@@ -58,6 +58,11 @@ Rules that matter here:
   *missed* item would be noticed. If not, the unit is V0 for routing even when each finding
   is quote-checkable, so it does not go to Sonnet. Give a parity or B2 research unit
   `lenses: 2` (inputs and data / time and ordering) to widen what it finds.
+- **Recall-critical research units** (V0 or B≥1) run on W at high or xhigh, never on sonnet,
+  and get an outcome critic (coverage, gaps, overstated); a material gap or coverage < 0.75
+  spends the unit's one re-route as a gap re-run. `quality: 'max'` adds a critic on every
+  unit, mediums at V3, no topK and verifier batch 2 under a 0.9·U ceiling (the default
+  `lenses: 2` it gives applies to review cards; set `lenses: 2` on research cards yourself).
 - **Calibrated severity** (0.1.7, producers and skeptics, `SEVERITY_MATRIX` in fanout.js):
   each finding names a `trigger` (normal | edge | misconfig | theoretical) and an `impact`
   (customer_money_legal | wrong_outcome | operational | cosmetic); the foreman derives

@@ -112,6 +112,12 @@ copies, `<id>A` and `<id>B`, each with one lens line appended to its brief (A: i
 data; B: time and ordering). Each copy is a full unit — priced, inspected, classified and
 re-routed on its own, with `lens`/`lensOf` on its card row. Rails errors: `lenses` other
 than 1 or 2, `lenses: 2` on another kind, or combined with `n: 1`.
+`quality` (since 0.1.7): `'standard'` (default) or `'max'`; anything else is a rails error.
+`quality: 'max'` is the quality profile: a review card with B≥1 and no `lenses` becomes
+`lenses: 2` (unless `n: 1` or allow-up); `verify.rungs.medium` defaults to V3; no topK;
+an outcome critic on every unit; verifier batch 2; `caps.ceilingMult` 0.9 unless the user
+set `ceilingMult` or `ceilingUsd`. The card carries `quality` and the plan log line shows
+`quality: max`. Explicit values in the args always win.
 `verify.waiver` (since 0.1.5): a rails error names any plan whose `rungs.high` or
 `rungs.blocker` is below V2 without a waiver (a non-empty string ≤200 chars).
 
@@ -125,7 +131,7 @@ The foreman picks each unit's agent type; the master never names one directly. I
 | 2 | else `ctx === 'keep'` | `workerCtx` → `dynamic-fanout:worker-ctx` | 30 | 15k + `ctxTok` |
 | 3 | else vector `T === 2` (MCP or long tool loops) | `workerMcp` → `dynamic-fanout:worker-mcp` | 35 | 15k |
 | 4 | else | `worker` → `dynamic-fanout:worker` | 30 | 8k (lean) |
-| — | verifiers / inspectors | `skeptic` / `inspector` | 12 / 6 | 8k (lean) |
+| — | verifiers / inspectors / outcome critics | `skeptic` / `inspector` / `skeptic` (role `critic`) | 20 / 6 / 20 | 8k (lean) |
 | — | `dynamic-fanout:implement`'s whole-diff review | `dynamic-fanout:reviewer` | 30 | 8k (lean) |
 
 The cap is the agent file's `maxTurns` and the same number `price()` uses (`calib.caps`).
@@ -202,7 +208,7 @@ and higher effort.
 Pricing basis for P's non-unit terms: verifiers are priced on the `V3` cell at
 `ultra.inAvg·verifierInFrac`, the sweep cell at `ultra.inAvg`, and the critic at
 `ultra.inAvg·verifierInFrac` — all three with 0 CLAUDE.md context on the lean prefix,
-the verifiers on the skeptic cap (12) and the sweep/critic on the worker cap (30). The
+the verifiers and outcome critics on the skeptic cap (20) and the sweep/critic on the worker cap (30). The
 planned verification spend is reported as `verifyUsd`. The inspector call is
 priced once per unit regardless of how many inspector calls that unit's run ends up
 making (see "Inspector" below).

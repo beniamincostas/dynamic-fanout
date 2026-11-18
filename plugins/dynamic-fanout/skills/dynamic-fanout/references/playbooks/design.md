@@ -29,6 +29,8 @@ adds a shape to `research.md`; the foreman kind stays `kind: 'research'`.
 
 - The recall rule applies: touchpoints and hand-offs are "what is there" questions, so they route
   as V0 and stay on W.
+- Touchpoints and hand-offs are recall-critical: route them at W·high or xhigh, never sonnet;
+  they get an outcome critic, and `quality: 'max'` (kind `research`) adds one to every unit.
 - The coupling inventory is mechanical: a missed coupling mostly shows as a failing test at build
   time (V1), so sonnet is right.
 

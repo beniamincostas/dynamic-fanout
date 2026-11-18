@@ -1519,3 +1519,34 @@ test('0.1.7: default topK grows with the V2+ claims; quality max has no topK', a
 test('0.1.7: rules tell units never to cite a scratchpad or temp copy', () => {
   assert.match(core.RULES, /never cite a scratchpad or temp copy/)
 })
+
+// ───────────────────────── 0.1.7: quality profile ─────────────────────────
+
+test('0.1.7: quality max profile — lenses on B>=1 review cards, medium V3, batch 2, ceilingMult 0.9, card shows it', () => {
+  const units = [
+    unit('rb1', { vec: 'D1 A0 T1 C0 V1 B1 G0' }),
+    unit('rb0', { vec: 'D1 A0 T1 C0 V1 B0 G0' }),
+    unit('rone', { vec: 'D1 A0 T1 C0 V1 B2 G0', lenses: 1 }),
+  ]
+  const std = core.validate(baseArgs({ units }))
+  assert.deepEqual(std.units.map(u => u.id), ['rb1', 'rb0', 'rone'], 'standard: no default lenses')
+  assert.equal(std.rungs.medium, 'V2')
+  const V = core.validate(baseArgs({ units, quality: 'max' }))
+  assert.deepEqual(V.errors, [])
+  assert.deepEqual(V.units.map(u => u.id), ['rb1A', 'rb1B', 'rb0', 'rone'], 'B>=1 review card splits; explicit lenses 1 wins')
+  assert.equal(V.rungs.medium, 'V3')
+  assert.equal(core.validate(baseArgs({ units, quality: 'max', verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' } } })).rungs.medium, 'V2', 'explicit rung wins')
+  // research cards keep the master's lenses choice; the default is for review
+  assert.equal(core.validate(baseArgs({ kind: 'research', units, quality: 'max' })).units.length, 3)
+  assert.equal(core.verifySizing({}, 'standard', 4, 'max').batch, 2)
+  assert.equal(core.verifySizing({ batch: 4 }, 'standard', 4, 'max').batch, 4)
+  assert.equal(core.verifySizing({}, 'standard', 4).batch, 3)
+  const K = core.calibrate()
+  const Vm = core.validate(baseArgs({ quality: 'max' }))
+  assert.equal(core.price(baseArgs({ quality: 'max' }), Vm, K).mult, 0.9)
+  assert.equal(core.price(baseArgs({ quality: 'max', caps: { pauseUsd: 100, ceilingMult: 0.6 } }), Vm, K).mult, 0.6, 'a user ceiling wins')
+  assert.equal(core.price(baseArgs(), core.validate(baseArgs()), K).mult, 0.5)
+  const M = core.price(baseArgs({ quality: 'max' }), Vm, K)
+  assert.equal(core.buildCard(baseArgs({ quality: 'max' }), Vm, M, K).quality, 'max')
+  assert.equal(core.buildCard(baseArgs(), core.validate(baseArgs()), core.price(baseArgs(), core.validate(baseArgs()), K), K).quality, 'standard')
+})

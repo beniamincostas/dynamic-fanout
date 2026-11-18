@@ -103,6 +103,15 @@ Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs 
    (`<id>A` inputs and data, `<id>B` time and ordering), each priced, inspected and
    re-routed on its own, and dedup merges what both report. Two differently-focused
    reviewers overlap little (26 issues merged into 17). Not with `n:1`.
+   **Recall-critical units (0.1.7 audit):** every false finding came from a medium-effort
+   unit (opus·medium, sonnet·medium; opus high/xhigh had 0 of 23 false), and recall was 11%
+   for a plain opus·medium unit vs 33% for a two-lens opus·xhigh unit. A review/research unit
+   that is V0 or B≥1 therefore runs on W at high or xhigh, never on sonnet, with `lenses: 2`
+   for parity and B2 review. Such a unit also gets an **outcome critic** (critic role, default
+   W·medium): a material gap, or coverage < 0.75, spends its one re-route as a gap re-run.
+   **Quality profile** (`quality: 'max'`): review cards with B≥1 default to `lenses: 2`,
+   `rungs.medium` V3, no topK, a critic on every unit, verifier batch 2, ceilingMult 0.9
+   unless the user set a ceiling. Explicit card and `verify` values win.
    Every other unit is cheaper only because it is easy, or because a named objective check
    catches its failure. `check:none` outside parity is a planning error.
 5. **Unsure → W·medium plus an objective check.** Never guess low; a cheap miss costs a

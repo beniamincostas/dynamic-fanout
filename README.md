@@ -23,6 +23,27 @@ A deterministic foreman workflow enforces the cards:
 
 Code never picks a model or an effort.
 
+### 0.1.7: the orchestrator checks outcomes, not just mechanics
+
+A blind quality audit of 0.1.5 runs (42 findings re-judged by reference judges on
+ultracode's own cell; recall measured against two blind reviewers per scope) found good
+precision (2 of 38 non-refuted findings false, both from medium-effort units) but inflated
+severity (60% filed too high) and low recall: 33% for a two-lens opus·xhigh unit, 11% for a
+plain opus·medium unit. The old outcome check was only mechanical, so it never saw a miss.
+0.1.7:
+- an **outcome critic** per recall-critical unit (coverage, gaps, overstated); a material gap
+  spends the unit's one re-route as a **gap re-run**, never a second one;
+- an **OVERSTATED** verdict for real but overstated claims, and severity derived from
+  **trigger x impact** instead of a free label;
+- verification capacity: skeptic cap 20, V3/V4 batches of 2, one verifier retry, adaptive topK;
+- `stats.mjs --summary` prints a **QUALITY** table and `PROMOTE QUALITY`;
+- the implement review runs as three parallel lenses with one bounded repair round;
+- a **quality profile**, `--quality max` (`quality: 'max'`): two lenses on B≥1 review cards,
+  mediums at V3, no topK, a critic on every unit, verifier batches of 2, ceiling 0.9·U;
+- a **guard hook** on the Workflow tool: a hand-written Workflow script (whose agents ran
+  uncapped, 245-387 turns each in production) is denied unless it goes through
+  dynamic-fanout or carries `// dynamic-fanout: exempt <reason>`.
+
 ### 0.1.5: recall, severity and fewer lost claims
 
 Measured on seven production runs (208 agents) and a blind quality audit (46 findings
@@ -134,6 +155,7 @@ It also triggers on its own when an ultracode or multi-agent fan-out is about to
 | Flag | Meaning |
 |---|---|
 | `--depth` | `quick` (≤4 agents, light verification), `standard`, or `deep` (two workflows, V4 panels, completeness critic). Auto-detected when omitted. |
+| `--quality max` | The quality profile: two lenses on B≥1 review cards, mediums at V3, no topK, a critic on every unit, verifier batches of 2, ceiling 0.9·U. |
 | `--ref-effort` | The effort ultracode's crew would inherit (E_ref). Parity units and the ultracode estimate are priced at it. Default `xhigh`. |
 | `--allow-up` | Lets one crux unit run on a model above your session's. |
 | `--route u2=opus·high` | Overrides one unit's cell. The card marks it `override:user`. |

@@ -211,3 +211,56 @@ test('0.1.7 docs: the implement review is three lenses priced at 3x the reviewer
   assert.match(rv, /Themes to repair:/);
   assert.match(rv, /acceptance command/);
 });
+
+test('0.1.7 docs: SKILL.md states the orchestrator job, audit basis, critic, quality profile and guard hook', () => {
+  assert.match(SKILL, /check(s)? (the|each) outcome/i);
+  assert.match(SKILL, /escalat\w+ once/i);
+  assert.match(SKILL, /11%/);
+  assert.match(SKILL, /33%/);
+  assert.match(SKILL, /recall-critical/);
+  assert.match(SKILL, /gap re-run/);
+  assert.match(SKILL, /OVERSTATED/);
+  assert.match(SKILL, /trigger.*impact/);
+  assert.match(SKILL, /QUALITY table/);
+  // the quality profile, with the numbers fanout.js uses
+  assert.match(SKILL, /`--quality max`/);
+  assert.match(FANOUT, /a\.quality === 'max' \? 0\.9 : 0\.5/);
+  assert.match(FANOUT, /quality === 'max' \? 2 :/);
+  assert.match(FANOUT, /a\.quality === 'max' \? \{ medium: 'V3' \}/);
+  assert.match(SKILL, /quality: 'max'[^\n]*`lenses: 2`[^\n]*medium→V3[^\n]*no topK[^\n]*critic on every unit[^\n]*batch(es)? of 2[^\n]*0\.9·U/);
+  // the guard hook
+  assert.match(SKILL, /guard-workflow\.mjs/);
+  assert.match(SKILL, /\/\/ dynamic-fanout: exempt <reason>/);
+  assert.match(SKILL, /every Workflow script/i);
+});
+
+test('0.1.7 docs: references, playbooks, README and CHANGELOG mirror the code', () => {
+  const routing = read(REFS, 'routing.md');
+  const workflow = read(REFS, 'workflow.md');
+  const schemas = read(REFS, 'schemas.md');
+  const econ = read(REFS, 'economics.md');
+  for (const [name, doc] of [['routing', routing], ['workflow', workflow], ['economics', econ]]) {
+    assert.match(doc, /quality: 'max'/, name);
+    assert.match(doc, /critic/, name);
+  }
+  assert.match(schemas, /UNIT_CRITIC/);
+  assert.match(schemas, /coverage/);
+  // skeptic cap is the agent file's maxTurns (20), not the old 12
+  const cap = read(PLUGIN, 'agents', 'skeptic.md').match(/maxTurns: (\d+)/)[1];
+  assert.equal(cap, '20');
+  assert.match(econ, new RegExp('skeptic ' + cap));
+  assert.match(econ, new RegExp('skeptic: ' + cap));
+  assert.match(workflow, new RegExp('skeptic cap \\(' + cap + '\\)'));
+  assert.doesNotMatch(workflow, /skeptic cap \(12\)/);
+  assert.doesNotMatch(econ, /skeptic 12\b|skeptic: 12\b/);
+  for (const pb of ['review', 'research', 'implement', 'design']) {
+    assert.match(read(REFS, 'playbooks', pb + '.md'), /quality: 'max'|dynamic-fanout: exempt/, pb);
+  }
+  assert.match(read(REFS, 'playbooks', 'implement.md'), /dynamic-fanout: exempt/);
+  const readme = read(REPO, 'README.md');
+  assert.match(readme, /### 0\.1\.7/);
+  assert.match(readme, /guard/);
+  const log = read(REPO, 'CHANGELOG.md');
+  assert.match(log, /^## dynamic-fanout 0\.1\.7/m);
+  assert.ok(fs.existsSync(path.join(PLUGIN, 'hooks', 'hooks.json')));
+});

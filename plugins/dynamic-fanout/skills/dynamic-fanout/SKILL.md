@@ -1,7 +1,7 @@
 ---
 name: dynamic-fanout
 description: "Lean, master-routed multi-agent fan-out: the efficient replacement for ultracode's agent fan-out. The main session plans at max effort and writes a routing card per subagent (model × effort, one pre-chosen fallback, an objective check, whether it keeps CLAUDE.md). A deterministic foreman workflow then runs it under a hard cost ceiling below the ultracode estimate, with evidence inspection, at most one re-route per unit and risk-weighted verification. Use this whenever you are about to fan out subagents or write a fan-out Workflow script: when ultracode is on and the task spans several files or questions, when the user says fan out, use a workflow, multi-agent, parallel agents or orchestrate, or when a research, review/audit, data-analysis or implementation task is big enough for 3 or more parallel agents, even if this skill is not named. Not for single-file edits, one-question lookups, or tasks the solo gate would keep inline."
-argument-hint: '<task> [--depth quick|standard|deep] [--ref-effort low|medium|high|xhigh|max] [--allow-up] [--route u2=opus·high] [--ceiling <usd>] [--solo] [--confirm]'
+argument-hint: '<task> [--depth quick|standard|deep] [--ref-effort low|medium|high|xhigh|max] [--allow-up] [--route u2=opus·high] [--ceiling <usd>] [--quality max] [--solo] [--confirm]'
 effort: max
 allowed-tools: Read, Grep, Glob, Bash(ls:*), Bash(wc:*), Bash(git ls-files:*), Bash(git status:*), Bash(node:*)
 ---
@@ -19,6 +19,7 @@ Flags (all optional) and the args v2 field each one sets:
 | `--allow-up` | at most one unit above the session model | `session.allowUp: true` |
 | `--route u2=opus·high` (also `opus.high`, `opus:high`) | user override for one unit's primary cell | `overrides:[{id:'u2', p:{model:'opus',effort:'high'}, by:'user'}]`; an override with `p` and no `fb` clears the old fallback (fb → null), so add `fb` only if the user gave one |
 | `--ceiling <usd>` | user ceiling that replaces 0.5·U | `caps.ceilingUsd` |
+| `--quality max` | the quality profile (§3): more lenses, verification and critics, ceiling 0.9·U | `quality: 'max'` |
 | `--confirm` | pause on the run card | launch with `dryRun:true`, show the card, wait, then launch with `confirmed:true` |
 | `--solo` | skip the fan-out | no workflow |
 
@@ -33,9 +34,11 @@ The **foreman** (`workflows/fanout.js`) is code. It validates your cards, prices
 - you spend thinking where it multiplies (the plan);
 - the crew spends exactly what each unit needs.
 
+**Your job is the result, not the fan-out.** For every task, choose the model and effort that will give a correct, complete result. The foreman checks each outcome, mechanically (quotes exist, files were read, the unit did not block) and, since 0.1.7, with an **outcome critic** that looks for misses and overstatement. When an outcome is not good enough, it escalates once: that task re-runs on the stronger setup you chose in advance, and never a second time. Quality and confidence come first; cost matters only as not wasting tokens.
+
 **Two promises to keep on every run:**
 1. **No churn.** Each unit gets 1 primary + ≤1 infra retry + ≤1 missing-slice run + ≤1 re-route, and nothing more. Never retry "until it is good".
-2. **Never costlier than ultracode.** The crew's planned spend plus reserve must fit **0.5·U**, the ultracode-equivalent, so the total with your own share is ≈0.6·U. Parity-heavy runs may go to 0.8·U, flagged.
+2. **Never costlier than ultracode.** The crew's planned spend plus reserve must fit **0.5·U**, the ultracode-equivalent, so the total with your own share is ≈0.6·U. Parity-heavy runs may go to 0.8·U, flagged; the quality profile (`quality: 'max'`) defaults to 0.9·U.
 
 Resolve these once per run:
 - **S** is your own model tier: the family token in the exact model ID your system prompt names (`claude-<family>-…`, also inside `us.anthropic.*` or with a `[1m]` suffix) → `haiku|sonnet|opus|fable`. If none matches, run solo.
@@ -54,6 +57,8 @@ The scripts live two directories above this skill's base directory: `<base>/../.
 | Neither tool available | **In-context**: run the units sequentially yourself, each tagged `(degraded)` |
 
 On a Haiku session, run solo. Fan-out needs a planner stronger than the crew.
+
+**Every Workflow script goes through dynamic-fanout**, including a 1-3-agent build or review pipeline: builds through `dynamic-fanout:implement`, review and research through `dynamic-fanout:fanout`. A hand-written workflow runs its agents uncapped on the session model and effort, with outcomes unchecked and no escalation; in production runs such agents ran 245-387 turns at 450-890k tokens of context, and most workflow spend went there, outside this quality loop. The plugin's PreToolUse hook (`hooks/guard-workflow.mjs`) therefore denies a Workflow call unless its name starts with `dynamic-fanout:`, its script calls `workflow('dynamic-fanout:…')`, or it carries a line `// dynamic-fanout: exempt <reason>` (a reason of 10+ characters). Use the marker only when the user explicitly wants a plain workflow; the hook names the exemption back to you. It fails open on any error.
 
 ## 1. Triage and the solo gate (inline, cheap)
 
@@ -107,6 +112,9 @@ Why: in a benchmark, a solo review cost under 0.15× ultracode but missed exactl
 At ≥3 units, read `references/routing.md` and follow it. In short:
 - **Score** each unit on `D A T C V B G` (+ `n` when numbers must tie out).
 - **Recall rule:** for review and research units, score `V` by whether a **missed** issue would be noticed, not whether each finding can be checked. If a miss would go unnoticed, the unit counts as V0 for routing even when every finding is grep-checkable, so it does not go to Sonnet (measured recall: ~60% for an opus·xhigh unit, ~41% for a sonnet·medium one). Give parity and B2 review units `lenses: 2`: the card runs as two copies, one looking at inputs and data, one at time and ordering, because two differently-focused reviewers overlap little; the foreman merges what both find.
+- **Recall-critical units (0.1.7 audit).** A blind audit of 0.1.5 runs (reference judges on ultracode's own cell, recall against two blind reviewers per scope) found: every false finding came from a medium-effort unit (opus·medium, sonnet·medium; opus at high or xhigh had 0 of 23 false); recall was **11%** for a plain opus·medium unit and **33%** for a two-lens opus·xhigh unit; single passes see about a third, and different passes find different issues. So a recall-critical unit (review or research, V0 or B≥1: its misses would go unnoticed) runs on **W at high or xhigh** effort, **never on sonnet**, with `lenses: 2` for parity and B2 review.
+- **Outcome critic and gap re-route (0.1.7).** A recall-critical review/research unit, any unit whose `check` names `critic`, and every unit under `quality: 'max'` get an outcome critic once the mechanical checks pass (cell `critic.cell`, default W·medium). It reads the brief, Scope, `files_read` and findings, and returns `coverage`, `gaps` and `overstated`. An overstated finding is verified one rung higher, with the critic's note for the skeptic. A material gap, or coverage < 0.75 on a recall-critical unit, spends the unit's **one** re-route as a **gap re-run** (on `fb`, or `p` when `fb` is null; reserved in R at `caps.gapRate` 0.3), and its findings are added. A unit already re-routed for capability gets no gap re-run; gaps no re-run covered go to `digest.uncovered`, never silently.
+- **Quality profile:** `quality: 'max'` (flag `--quality max`): review cards with B≥1 default to `lenses: 2`, medium→V3, no topK, a critic on every unit, verifier batches of 2, and a ceiling of 0.9·U unless the user set one (`caps.ceilingMult` or `--ceiling`); an explicit card or `verify` value still wins, and the card shows `quality: max`. Use it when quality matters more than the usual 0.5·U.
 - **Findings and severity:** a unit returns ≤15 findings (a unit stopped at the old cap of 8 missed real issues). Producers and skeptics name a `trigger` (normal | edge | misconfig | theoretical) and an `impact` (customer_money_legal | wrong_outcome | operational | cosmetic) per finding; the foreman derives severity from the pair by `SEVERITY_MATRIX` (a free label stayed too high in 60% of findings). The skeptic returns its own pair (`verifiedSeverity`), which orders the digest; a real but overstated claim is OVERSTATED (counted as real), and REFUTED is reserved for claims the evidence shows false.
 - **Model buys capability, effort buys thoroughness.** Pick the lowest cell that succeeds **first time**. When unsure, use W·medium plus an objective check, and never guess low.
 - **Parity cell:**
@@ -129,7 +137,7 @@ At ≥3 units, read `references/routing.md` and follow it. In short:
 **Bounded agents.** Every crew agent is turn-capped (its agent file's `maxTurns`: worker 30, worker-mcp 35, worker-ctx 30, implementer 60, skeptic 20, inspector 6), and its prompt carries the budget, find-before-read and "return `partial` with `remaining[]`" rules. Unbounded agents were the 0.1.0 overrun (28–65 turns, 2.4–5.6× the planned reading). So:
 - **Size units so planned turns fit the cap** (≈ (10 + in/2.5k) × effort factor; the card prints each unit's `turns`). Planned turns at the cap mean the unit is too big: split it.
 - **Peel mechanical work into sonnet units** (inventory, consistency, mapping, extraction); keep judgement on W. The foreman warns when >70% of a review/research plan runs on S.
-- **`high` effort only when D2 ∧ V≤1 ∧ B2.** A B1 unit starts at W·medium with `fb` W·high, so the one re-route exists.
+- **`high` effort only when D2 ∧ V≤1 ∧ B2, or the unit is recall-critical** (see above: W·high or xhigh, no sonnet). Any other B1 unit starts at W·medium with `fb` W·high, so the one re-route exists.
 
 Write the **shared preamble** (args `shared`) once: task goal, the rules capsule (the CLAUDE.md constraints `ctx:'omit'` units still need), output expectations; no file contents, no credentials. Details: `references/routing.md`. Write each **brief** as pointers (paths, line ranges, questions), ≤120 words. Build the args exactly as `references/workflow.md` specifies (args v2).
 

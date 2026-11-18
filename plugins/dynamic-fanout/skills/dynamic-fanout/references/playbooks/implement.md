@@ -4,6 +4,12 @@ Load this only when `kind: 'implement'`. As of 0.1.3 the implement loop is its o
 workflow, `dynamic-fanout:implement` (`workflows/implement.js`) — the master builds args
 v1 and calls it; it is no longer a hand-written inline script.
 
+**Every build goes through this workflow**, even a 1-3-agent build-and-review pipeline. A
+hand-written Workflow script runs its agents uncapped on the session model and effort, with no
+outcome check and no escalation; the plugin's guard hook (`hooks/guard-workflow.mjs`) denies
+it unless the script calls `workflow('dynamic-fanout:implement', …)` or carries
+`// dynamic-fanout: exempt <reason>` because the user explicitly wants a plain workflow.
+
 ## When this kind applies
 
 - Code or config must change (feature, fix, mapping, fixtures) in ≥2 independent units;
