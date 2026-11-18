@@ -1099,7 +1099,7 @@ const INSPECT_RULES = [
 const SKEPTIC_RULES = [
   'You are an independent skeptic. For each claim decide:',
   '- CONFIRMED: you verified it yourself in the files or data, and you give your own support: support {file, line, quote} = a verbatim quote you found that shows the claimed behaviour (prefer a line other than the producer\'s evidence), or, for a claim that something is absent, support_cmd = the exact search you ran that came back empty. Without support, use PLAUSIBLE.',
-  '- OVERSTATED: the claim is real, but its trigger, scope or impact is overstated. Give support as for CONFIRMED and the corrected trigger and impact. It counts as a real finding.',
+  '- OVERSTATED: the claim is real, but its trigger or impact is filed too high, so its severity should be lower. Give support as for CONFIRMED and the corrected (lower) trigger and impact. It counts as a real finding. A real claim whose example input, failure value or title is wrong but whose severity stands is CONFIRMED: put the correction in reason.',
   '- REFUTED: only when the evidence shows the claim is false; give counter_quote {file, line, quote}. No counter-evidence means not refuted; real but overstated is OVERSTATED, not REFUTED.',
   '- PLAUSIBLE: it could be true but you could not fully confirm it.',
   '- UNVERIFIABLE: it cannot be checked with the access you have.',
@@ -1112,7 +1112,7 @@ const UNIT_CRITIC_RULES = [
   'You are an outcome critic. You judge whether one unit\'s result covers its brief and its scope; you do not redo the work and you do not verify each finding.',
   '- coverage: your honest estimate (0-1) of the share of the real issues in this scope that the findings below cover.',
   '- gaps: parts of the brief or scope the unit did not cover (a file not read, a part of the brief skipped, a class of issue never looked for). material = true only when a real issue there is likely; add evidence {file, line, quote} when you saw one. At most 6, most important first.',
-  '- overstated: findings (by fid) that are real but filed too high or claimed too broadly, with why. Judge by the trigger and impact scale below.',
+  '- overstated: findings (by fid) that are real but whose trigger or impact is filed too high, with why. Judge by the trigger and impact scale below. A wrong example input or failure value in an otherwise right finding is not overstated: list it under gaps with material false and evidence at that finding\'s line, so its skeptic checks the correction.',
   'Spot-check with Bash (`grep -n`, `nl -ba FILE | sed -n \'A,Bp\'`); never read whole files. Read-only: never edit anything. Your final answer is the structured output only.',
   SEVERITY_RUBRIC,
 ].join('\n')
@@ -1663,6 +1663,12 @@ async function runBatch(b) {
     const top = rated.length ? rated.reduce((a, x) => (sevRank(ratedSeverity(x)) > sevRank(ratedSeverity(a)) ? x : a)) : null
     c.verifiedSeverity = top ? ratedSeverity(top) : c.severity
     if (top && TRIGGERS.includes(top.trigger) && IMPACTS.includes(top.impact)) Object.assign(c, { verifiedTrigger: top.trigger, verifiedImpact: top.impact })
+    // OVERSTATED means filed too high. When the skeptic's own trigger x impact does not rate the
+    // claim lower than filed, it is real at its filed severity with corrected details: CONFIRMED,
+    // so routing's quality learning (refuted + overstated) is not fed a false inflation signal.
+    if (c.verdict === 'OVERSTATED' && sevRank(c.verifiedSeverity) >= sevRank(c.severity)) {
+      Object.assign(c, { verdict: 'CONFIRMED', reason: `confirmed at its filed severity; details corrected: ${c.reason || ''}`.trim().slice(0, 600) })
+    }
   }
 }
 

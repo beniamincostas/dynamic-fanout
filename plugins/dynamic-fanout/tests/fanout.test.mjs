@@ -1496,6 +1496,31 @@ test('0.1.7: an OVERSTATED claim counts as real, not refuted; verifiedSeverity c
   assert.equal(res.digest.counts.confirmed, 1)
 })
 
+test('0.1.7: an OVERSTATED verdict that rates no lower than filed becomes CONFIRMED with the correction kept', async () => {
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'normal', 'wrong_outcome', 'big')] }),
+    'u2:1': okUnit({ files_read: ['src/b.py'], findings: [tf('src/b.py', 4, 'normal', 'wrong_outcome', 'other')] }),
+  })
+  const { res } = await runFanout(baseArgs(), (prompt, o, n) => {
+    if (!tagOf(prompt).startsWith('v:')) return base(prompt, o, n)
+    if (prompt.includes('| big')) return verdictAll(prompt, 'OVERSTATED', { support_cmd: 'grep -n x', trigger: 'normal', impact: 'wrong_outcome', reason: 'example value is 1545, not 1245' })
+    return verdictAll(prompt, 'CONFIRMED', { trigger: 'normal', impact: 'wrong_outcome' })
+  })
+  const big = res.results.claims.find(c => c.title === 'big')
+  assert.equal(big.verdict, 'CONFIRMED')
+  assert.equal(big.verifiedSeverity, big.severity)
+  assert.match(big.reason, /^confirmed at its filed severity; details corrected: .*1545/)
+  assert.equal(res.digest.counts.overstated, 0)
+  assert.equal(res.digest.counts.confirmed, 2)
+})
+
+test('0.1.7: critic and skeptic rules send a wrong example value to the correction path, not to OVERSTATED', async () => {
+  assert.match(core.SKEPTIC_RULES, /severity stands is CONFIRMED/)
+  const { calls } = await runFanout(baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] }), responder())
+  const critic = calls.find(c => tagOf(c.prompt) === 'k:u1:1')
+  assert.match(critic.prompt, /wrong example input or failure value[^\n]*is not overstated: list it under gaps with material false and evidence at that finding's line/)
+})
+
 // ───────────────────────── 0.1.7 verification capacity ─────────────────────────
 
 test('0.1.7: skeptic turn cap is 20 in the calibration card', () => {
