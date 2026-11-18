@@ -192,3 +192,22 @@ test('0.1.7: SKILL.md states the stats quality rule, --also and repeated --ledge
   assert.match(src, /t === '--also'/);
   assert.match(src, /a\.ledgers\.push/);
 });
+
+test('0.1.7 docs: the implement review is three lenses priced at 3x the reviewer, with one repair round', () => {
+  const IMPL = read(PLUGIN, 'workflows', 'implement.js');
+  const factor = IMPL.match(/const REVIEW_FACTOR = ([\d.]+)/)[1];
+  const lenses = (IMPL.match(/const REVIEW_LENSES = \[([\s\S]*?)\n\]/)[1].match(/id: '[A-Z]'/g) || []).length;
+  assert.equal(lenses, 3);
+  const pb = read(REFS, 'playbooks', 'implement.md');
+  assert.match(pb, new RegExp('`' + lenses + ' × ' + factor.replace('.', '\\.') + ' × max\\(theme estimate\\)`'));
+  assert.match(pb, /repair round/);
+  assert.match(pb, /acceptanceCmd/);
+  assert.match(pb, /review returned no text/);
+  for (const l of ['boundaries and time', 'inputs and data', 'privacy and test integrity']) {
+    assert.match(pb, new RegExp(l), l);
+    assert.match(SKILL, new RegExp(l), l);
+  }
+  const rv = read(PLUGIN, 'agents', 'reviewer.md');
+  assert.match(rv, /Themes to repair:/);
+  assert.match(rv, /acceptance command/);
+});
