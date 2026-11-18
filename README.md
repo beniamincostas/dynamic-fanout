@@ -33,7 +33,7 @@ plain opus·medium unit. The old outcome check was only mechanical, so it never 
 0.1.7:
 - an **outcome critic** per recall-critical unit (coverage, gaps, overstated); a material gap
   spends the unit's one re-route as a **gap re-run**, never a second one;
-- an **OVERSTATED** verdict for real but overstated claims, and severity derived from
+- an **OVERSTATED** verdict for real claims filed too high, and severity derived from
   **trigger x impact** instead of a free label;
 - verification capacity: skeptic cap 20, V3/V4 batches of 2, one verifier retry, adaptive topK;
 - `stats.mjs --summary` prints a **QUALITY** table and `PROMOTE QUALITY`;

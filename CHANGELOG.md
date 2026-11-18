@@ -76,6 +76,18 @@ failure value, and one showed that a sign bug reached further than reported. Now
   sees both.
 - The RESULT docs now list `digest.uncovered`, `digest.notes`, the 0.1.7 counts, and
   `criticNote`/`criticCorrection` on claims.
+- **OVERSTATED now means "filed too high".** A second smoke run (with the gap re-run, two
+  OVERSTATED verdicts, $1.59 committed against $3.83 for ultracode) showed that the critic had
+  sent "the example value is wrong" through its *overstated* channel. Both skeptics then said
+  OVERSTATED but kept the filed trigger and impact, so a blocker stayed a blocker, labelled
+  overstated. Routing's quality learning (`PROMOTE QUALITY`, refuted + overstated) would have
+  read that as severity inflation. Now:
+  - an OVERSTATED verdict whose corrected pair does not rate the claim lower becomes
+    CONFIRMED, with reason "confirmed at its filed severity; details corrected: …";
+  - the critic sends a wrong example value as a non-material gap at the finding, so it takes
+    the correction path above;
+  - the skeptic rules say that a wrong example value or title at the same severity is
+    CONFIRMED.
 
 ## dynamic-fanout 0.1.6 — 2026-10-21
 

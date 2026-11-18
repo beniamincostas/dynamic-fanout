@@ -26,7 +26,7 @@ const SEVERITIES = ['info', 'low', 'medium', 'high', 'blocker'];
 const sevRank = (s) => Math.max(0, SEVERITIES.indexOf(s));
 // The skeptic's rating when it has one, else the filed severity (fanout.js stores both).
 const effSev = (c) => c.verifiedSeverity || c.severity;
-export const LEGEND = 'PLAUSIBLE = grounded, not independently re-checked (in a blind audit plausible and confirmed findings were equally often true); OVERSTATED = real, but the trigger, scope or impact was overstated (severity re-derived from the corrected trigger/impact); [trigger/impact] shows filed->verified';
+export const LEGEND = 'PLAUSIBLE = grounded, not independently re-checked (in a blind audit plausible and confirmed findings were equally often true); OVERSTATED = real, but filed too high (severity re-derived lower from the corrected trigger/impact); [trigger/impact] shows filed->verified';
 
 /** Accept either the Workflow wrapper {summary, agentCount, logs, result} or RESULT itself. */
 export function unwrap(doc) {
