@@ -260,13 +260,14 @@ function agentOpts(key, K, role) {
 // 0.1.7: a fixed topK cut 12-46 claims per run. Unless the master sets verify.topK, it is
 // max(DEFAULT_TOPK[depth], ceil(half the V2+ claims)); quality 'max' verifies them all.
 // The money rails still gate every launch. price() passes no claim count (none exist yet).
+// quality 'max' also defaults the batch to 2: fewer claims per skeptic, fewer turn-cap misses.
 const MAX_STRONG_BATCH = 2
 function verifySizing(vcfg, depth, eligible, quality) {
   vcfg = vcfg || {}
   const topK = Number.isInteger(vcfg.topK) ? vcfg.topK
     : quality === 'max' ? Infinity
       : Math.max(DEFAULT_TOPK[depth], Math.ceil(0.5 * (Number(eligible) || 0)))
-  const batch = Number.isInteger(vcfg.batch) && vcfg.batch > 0 ? vcfg.batch : depth === 'quick' ? 5 : 3
+  const batch = Number.isInteger(vcfg.batch) && vcfg.batch > 0 ? vcfg.batch : quality === 'max' ? 2 : depth === 'quick' ? 5 : 3
   return { topK, batch }
 }
 
@@ -277,12 +278,12 @@ const batchFor = (rung, batch) => (rung === 'V3' || rung === 'V4' ? Math.min(bat
 // Verifier batches to reserve when the master gives no verify.expected: every expected
 // high gets checked (highs are exempt from topK); mediums only when their rung is V2+,
 // and then at most topK of them.
-function expectedVerifiers(nUnits, depth, vcfg, rungs, K) {
-  const { topK, batch } = verifySizing(vcfg, depth)
+function expectedVerifiers(nUnits, depth, vcfg, rungs, K, quality) {
+  const { topK, batch } = verifySizing(vcfg, depth, 0, quality)
   const highRung = (rungs && rungs.high) || DEFAULT_RUNGS.high
   const highs = Math.ceil((nUnits * K.highsPerUnit) / batchFor(highRung, batch))
   const medRung = (rungs && rungs.medium) || DEFAULT_RUNGS.medium
-  const mediums = ['V2', 'V3', 'V4'].includes(medRung) ? Math.ceil(Math.min(nUnits * K.mediumsPerUnit, topK || 0) / batchFor(medRung, batch)) : 0
+  const mediums = ['V2', 'V3', 'V4'].includes(medRung) ? Math.ceil(Math.min(nUnits * K.mediumsPerUnit, topK === Infinity ? nUnits * K.mediumsPerUnit : topK || 0) / batchFor(medRung, batch)) : 0
   return highs + mediums
 }
 
@@ -397,6 +398,11 @@ function validate(a) {
     else if (u.checks.includes('none') && !u.parity) errors.push(`check ${id}: check none is only allowed in the parity cell`)
     if (u.n && !u.checks.includes('rederive')) errors.push(`check ${id}: n=1 needs a planned re-derivation — add rederive to check`)
 
+    // Quality profile (0.1.7): under quality 'max' a review card with B>=1 defaults to two
+    // lenses (a two-lens xhigh unit found 3x the issues of a plain medium pass in the audit).
+    // An explicit lenses value wins; a card the split rules would reject stays single.
+    if (a.quality === 'max' && a.kind === 'review' && u.lenses === undefined && u.v && u.v.B >= 1 && !u.n && !upUnits.has(id)) u.lenses = 2
+
     // Two-lens split: a high-risk review/research card runs as two copies on the same card, each
     // with one lens, because two differently-focused reviewers overlap little. Both copies are
     // priced and inspected, classified and re-routed on their own; dedupClaims merges a finding
@@ -425,7 +431,8 @@ function validate(a) {
   // Verification cells: declared by the master; checked against the producers.
   const vcfg = a.verify || {}
   const cells = vcfg.cells || {}
-  const rungs = { ...DEFAULT_RUNGS, ...(vcfg.rungs || {}) }
+  // quality 'max' verifies mediums at V3 (the producer's W at high effort) unless the master set a rung.
+  const rungs = { ...DEFAULT_RUNGS, ...(a.quality === 'max' ? { medium: 'V3' } : {}), ...(vcfg.rungs || {}) }
   for (const [sev, r] of Object.entries(rungs)) if (!RUNGS.includes(r)) errors.push(`verify: rung for ${sev} must be one of ${RUNGS.join('|')} (got ${JSON.stringify(r)})`)
   out.rungs = rungs
   // A high/blocker finding below V2 is never independently checked; a run may only skip that
@@ -534,7 +541,7 @@ function price(a, V, K) {
   P += criticsUsd
   const nUnits = V.units.length
   const vcfg = a.verify || {}
-  const expected = Number.isInteger(vcfg.expected) ? Math.max(0, vcfg.expected) : expectedVerifiers(nUnits, a.depth, vcfg, V.rungs, K)
+  const expected = Number.isInteger(vcfg.expected) ? Math.max(0, vcfg.expected) : expectedVerifiers(nUnits, a.depth, vcfg, V.rungs, K, a.quality)
   const verifyUsd = expected * estUsd(V.V3, vIn, 0, K, skepO)
   const sweepUsd = V.rounds * estUsd(V.sweepCell, sweepIn, 0, K, sweepO)
   const criticUsd = a.depth === 'deep' ? estUsd(V.criticCell, vIn, 0, K, workO) : 0
@@ -551,7 +558,9 @@ function price(a, V, K) {
   // the audit's single passes missed most issues, so a critic will often name a material gap.
   const gapRate = typeof caps.gapRate === 'number' ? caps.gapRate : 0.3
   const R = floor > 0 ? Math.max(floor, Math.min(rate * rerouteSum + gapRate * gapSum, (capPct / 100) * P)) : 0
-  const mult = typeof caps.ceilingMult === 'number' ? caps.ceilingMult : 0.5
+  // quality 'max' buys verification and lenses with a higher default multiple (0.9·U); a
+  // ceiling the user set (ceilingMult or ceilingUsd) still wins.
+  const mult = typeof caps.ceilingMult === 'number' ? caps.ceilingMult : a.quality === 'max' ? 0.9 : 0.5
   let C = mult * U
   if (caps.parityBound) C = 0.8 * U
   if (typeof caps.ceilingUsd === 'number' && caps.ceilingUsd > 0) C = caps.ceilingUsd
@@ -593,7 +602,7 @@ function moneyRails(a, V, M) {
 function buildCard(a, V, M, K) {
   K = K || calibrate()
   return {
-    kind: a.kind, depth: a.depth, stage: V.stage,
+    kind: a.kind, depth: a.depth, stage: V.stage, quality: a.quality === 'max' ? 'max' : 'standard',
     S: V.S, W: V.W, refEffort: V.E, refSource: (a.session && a.session.refSource) || 'unknown',
     units: V.units.map(u => ({
       id: u.id, role: u.role, vec: u.vec, cell: cellKey(u.cell), fb: u.fbCell ? cellKey(u.fbCell) : null,
@@ -1166,7 +1175,7 @@ const pauseUsd = A.caps && typeof A.caps.pauseUsd === 'number' ? A.caps.pauseUsd
 if (M.P > pauseUsd && !A.confirmed && V.stage !== 'verify') {
   return { started: false, reason: 'pause', warnings: V.warnings, card, note: `planned $${round2(M.P)} exceeds pauseUsd $${pauseUsd}: show the card, then re-run with confirmed: true` }
 }
-log(`plan accepted: ${V.units.length} unit(s), U $${round2(M.U)}, P $${round2(M.P)}, R $${round2(M.R)}, C $${round2(M.C)} (${card.money.ratio}×U)`)
+log(`plan accepted: ${V.units.length} unit(s)${card.quality === 'max' ? ', quality: max' : ''}, U $${round2(M.U)}, P $${round2(M.P)}, R $${round2(M.R)}, C $${round2(M.C)} (${card.money.ratio}×U)`)
 
 const S = V.S
 const E = V.E

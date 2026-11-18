@@ -1,5 +1,55 @@
 # Changelog
 
+## dynamic-fanout 0.1.7 — 2026-11-18
+
+The orchestrator's job is a correct, complete result per task: choose each task's model and
+effort, check the outcome, and when it is not good enough re-run that task once on a stronger,
+pre-chosen setup. 0.1.5 checked outcomes only mechanically (quotes exist, files read, not
+blocked), so a capability re-route fired 0-1 times per run while misses, overstatement and
+inflated severity went unseen.
+
+**Measured basis.** A blind quality audit of the 0.1.5 runs: reference judges on ultracode's
+own cell re-judged 42 findings with the code pinned to the reviewed commit; two blind
+reviewers per scope measured recall, and an adjudicator compared. Precision was good: 2 of 38
+non-refuted findings were false, both from medium-effort units (opus·medium, sonnet·medium);
+opus at high or xhigh had 0 of 23 false. 3 of the 4 REFUTED findings were real but
+overstated. 60% of findings were filed too high (often by two levels), and skeptic re-ratings
+stayed too high in 15 of 24. Recall: a two-lens opus·xhigh unit found 33% of the real issues
+in its scope, a plain opus·medium unit 11% (missing 7 medium issues); different passes find
+different issues. From seven production runs: 35% of skeptics hit their 12-turn cap, a
+network outage killed every verifier batch of one run, topK cut 12-46 claims per run,
+verifiers failed on evidence citing another session's scratchpad copy, the implement
+workflow's single whole-diff reviewer once returned no text while three focused lenses found
+15 defects, and most workflow spend went into hand-written workflows whose agents ran
+uncapped (245-387 turns, 450-890k context) outside this quality loop.
+
+- **Outcome critic and gap re-route:** a recall-critical review/research unit (V0 or B≥1),
+  any unit with `critic` in its check, and every unit under `quality: 'max'` gets a lean
+  critic (default W·medium, role `critic`, prior 0.5). A material gap, or coverage < 0.75
+  on a recall-critical unit, spends the unit's one re-route as a gap re-run (`caps.gapRate`
+  0.3); uncovered gaps go to `digest.uncovered`. No-churn holds: one re-route per unit,
+  capability or gap.
+- **OVERSTATED** verdict (counted as real) and **calibrated severity**: producers and
+  skeptics name a trigger and an impact; `SEVERITY_MATRIX` derives the severity.
+- **Verification capacity:** skeptic cap 20, V3/V4 batches of at most 2, a verifier that
+  returns nothing retries once, adaptive topK `max(DEFAULT_TOPK, ceil(0.5 × V2+ claims))`,
+  and rules forbid citing a scratchpad or temp copy.
+- **Routing learns quality:** `stats.mjs` records refuted, overstated, gaps and coverage per
+  cohort; `--summary` prints a QUALITY table and `PROMOTE QUALITY`; `--also` and repeated
+  `--ledger` merge a deep run's two stages.
+- **Implement review** runs as three parallel lenses (boundaries and time, inputs and data,
+  privacy and test integrity) with one bounded repair round.
+- **Quality profile** `quality: 'max'` (`--quality max`): B≥1 review cards default to
+  `lenses: 2`, `rungs.medium` V3, no topK, a critic on every unit, verifier batch 2, and
+  ceilingMult 0.9 unless the user set a ceiling; the card shows `quality: max`.
+- **Guard hook** (`hooks/hooks.json`, `hooks/guard-workflow.mjs`): PreToolUse on the
+  Workflow tool denies a script that does not go through dynamic-fanout, unless it carries
+  `// dynamic-fanout: exempt <reason>` (10+ characters), which is allowed and named back to
+  the model. It fails open on any error.
+- **Docs:** SKILL.md states the orchestrator's job, the audit evidence and the routing it
+  implies: recall-critical units run on W at high or xhigh, never on sonnet, with lenses for
+  parity and B2 review.
+
 ## dynamic-fanout 0.1.6 — 2026-10-21
 
 From one production run: a UX and automation review of a report workbook (3 units, 63 claims,
