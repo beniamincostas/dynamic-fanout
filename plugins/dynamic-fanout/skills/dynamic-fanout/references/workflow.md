@@ -331,6 +331,9 @@ an agent could stay under its turn cap while still reading 3-4× what was planne
 making each `Read` too large. It is omitted when a unit's `in` is not set.
 
 A `partial` with `remaining[]` is a capacity signal: one slice run on `p` covers the rest.
+A quote the inspector finds at another line of its file (`actual_line`) is relocated: the
+evidence line is corrected, so the skeptic and `check-evidence.mjs` look in the right place
+(the unit's quote rate still counts it unresolved), and a gap finding citing it is grounded.
 Inspector items are mapped onto the unit's scope files before the check (exact match,
 then a unique suffix match), so a worker citing `fanout.js` for the scoped
 `plugins/x/workflows/fanout.js` is still resolved.
@@ -351,7 +354,8 @@ then a unique suffix match), so a worker citing `fanout.js` for the scoped
     invariants: [{ name, ok, lhs, rhs, diffCents }],
     critic: [ /* deep only: what is missing */ ],
     uncovered: [{ unit, area, why, cause }],   // critic gaps no gap re-run covered
-    notes: [{ unit, area, why, file, line }] },  // non-material critic gaps that point at no finding
+    notes: [{ unit, cid?, area, why, file, line }] },  // non-material critic gaps at no finding,
+                                                        // and corrections no skeptic judged (cid)
   ledger: {
     units: [{ id, role, vec, parity, p, fb, ctx, check, why, override, outcome, reason,
               verifyBump, attempts: [{ n, tag, cell, kind, mode, cls, estUsd }] }],

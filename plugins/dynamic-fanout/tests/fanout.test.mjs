@@ -1521,6 +1521,106 @@ test('0.1.7: critic and skeptic rules send a wrong example value to the correcti
   assert.match(critic.prompt, /wrong example input or failure value[^\n]*is not overstated: list it under gaps with material false and evidence at that finding's line/)
 })
 
+test('0.1.7 lens review: a V4 panel split CONFIRMED vs OVERSTATED (rated lower) stays OVERSTATED', async () => {
+  const a = baseArgs()
+  a.units[0].check = 'quote+V4'
+  const base = responder({ 'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'normal', 'wrong_outcome', 'split')] }) })
+  const { res } = await runFanout(a, (prompt, o, n) => {
+    const tag = tagOf(prompt)
+    if (!tag.startsWith('v:') || !prompt.includes('| split')) return base(prompt, o, n)
+    return tag.endsWith(':1')
+      ? verdictAll(prompt, 'CONFIRMED', { trigger: 'normal', impact: 'wrong_outcome' })
+      : verdictAll(prompt, 'OVERSTATED', { support_cmd: 'grep -n x', trigger: 'edge', impact: 'wrong_outcome', reason: 'only on edge input' })
+  })
+  const c = res.results.claims.find(x => x.title === 'split')
+  assert.equal(c.rung, 'V4')
+  assert.equal(c.verdict, 'OVERSTATED', 'the lens that rated it lower keeps the overstated signal')
+  assert.equal(res.digest.counts.overstated, 1)
+})
+
+test('0.1.7 lens review: an OVERSTATED rated above filed becomes CONFIRMED and says so', async () => {
+  const base = responder({ 'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'edge', 'wrong_outcome', 'up')] }) })
+  const { res } = await runFanout(baseArgs(), (prompt, o, n) => {
+    if (!tagOf(prompt).startsWith('v:') || !prompt.includes('| up')) return base(prompt, o, n)
+    return verdictAll(prompt, 'OVERSTATED', { support_cmd: 'grep -n x', trigger: 'normal', impact: 'customer_money_legal', reason: 'r' })
+  })
+  const c = res.results.claims.find(x => x.title === 'up')
+  assert.equal(c.verdict, 'CONFIRMED')
+  assert.match(c.reason, /^confirmed rated blocker, above its filed medium; details corrected/)
+})
+
+test('0.1.7 lens review: a correction on a claim no skeptic judges (low, V0) is listed in digest.notes with its cid', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 20, 'low', 'minor thing')] }),
+    'k:u1:1': { coverage: 0.9, overstated: [], gaps: [{ area: 'value wrong', why: 'it is 7, not 8', material: false, evidence: { file: 'src/u1.py', line: 21, quote: 'x' } }] },
+  }))
+  const c = res.results.claims.find(x => x.cid === 'u1.f1')
+  assert.equal(c.rung, 'V0')
+  assert.match(c.criticCorrection, /7, not 8/)
+  const n = res.digest.notes.find(x => x.cid === 'u1.f1')
+  assert.ok(n, 'listed in notes')
+  assert.match(n.area, /no skeptic judged it \(V0\)/)
+  assert.match(n.why, /7, not 8/)
+})
+
+test('0.1.7 lens review: a correction goes to the nearest finding, not the first within 3 lines', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 10, 'high', 'first'), finding('src/u1.py', 13, 'high', 'second')] }),
+    'k:u1:1': { coverage: 0.9, overstated: [], gaps: [{ area: 'value', why: 'is 514', material: false, evidence: { file: 'src/u1.py', line: 13, quote: 'x' } }] },
+  }))
+  const by = t => res.results.claims.find(x => x.title === t)
+  assert.equal(by('first').criticCorrection, null)
+  assert.match(by('second').criticCorrection, /is 514/)
+})
+
+test('0.1.7 lens review: dedup joins note parts without repeating one', () => {
+  const mk = (cid, corr) => ({ cid, unit: cid.split('.')[0], severity: 'high', title: 'loop skips last item', claim: 'x', evidence: [{ file: 'src/a.py', line: 16, quote: 'q' }], producer: { model: 'opus' }, criticCorrection: corr })
+  const out = core.dedupClaims([mk('u1.f1', 'a'), mk('u2.f1', 'b'), mk('u3.f1', 'b')], ['file', 'line'])
+  assert.equal(out.length, 1)
+  assert.equal(out[0].criticCorrection, 'a | b')
+})
+
+test('0.1.7 lens review: with a material gap, a correction to a finding goes to it, not to the gap re-run', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 16, 'high', 'loop bug')] }),
+    'k:u1:1': { coverage: 0.6, overstated: [], gaps: [
+      { area: 'error paths', why: 'never looked at', material: true },
+      { area: 'value wrong', why: 'total is 514, not 515', material: false, evidence: { file: 'src/u1.py', line: 17, quote: 'x' } },
+    ] },
+    'u1:2': okUnit({ files_read: ['src/u1.py'], findings: [] }),
+  }))
+  const gap = calls.find(c => tagOf(c.prompt) === 'u1:2')
+  assert.ok(gap, 'gap run launched for the material gap')
+  assert.match(gap.prompt, /error paths/)
+  assert.doesNotMatch(gap.prompt, /514, not 515/)
+  assert.match(res.results.claims.find(x => x.title === 'loop bug').criticCorrection, /514, not 515/)
+})
+
+test('0.1.7 lens review: a quote the inspector finds at another line is relocated, and a gap finding with it is kept', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res } = await runFanout(a, responder({
+    // 3 of 4 quotes resolve (0.75 passes the quote check); the 4th sits at another line.
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 3, 'medium', 'a1'), finding('src/u1.py', 5, 'medium', 'a2'), finding('src/u1.py', 7, 'medium', 'a3'), finding('src/u1.py', 30, 'medium', 'first issue')] }),
+    'i:u1:1': { checks: [{ ref: 'f0.e0', found: true }, { ref: 'f1.e0', found: true }, { ref: 'f2.e0', found: true }, { ref: 'f3.e0', found: false, actual_line: 9 }] },
+    'k:u1:1': gapCritic(),
+    'u1:2': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 40, 'medium', 'gap at wrong line')] }),
+    'i:u1:2': { checks: [{ ref: 'f0.e0', found: false, actual_line: 55 }] },
+  }))
+  const by = t => res.results.claims.find(x => x.title === t)
+  assert.equal(by('first issue').evidence[0].line, 9, 'primary evidence line corrected')
+  assert.ok(by('gap at wrong line'), 'relocated gap finding kept')
+  assert.equal(by('gap at wrong line').evidence[0].line, 55)
+  assert.ok(!res.digest.uncovered.some(x => x.area === 'gap at wrong line'))
+})
+
+test('0.1.7 lens review: the critic is told not to list checked-and-fine areas as gaps', async () => {
+  const { calls } = await runFanout(baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] }), responder())
+  assert.match(calls.find(c => tagOf(c.prompt) === 'k:u1:1').prompt, /Do not list areas you checked and found fine, or parts outside the brief/)
+})
+
 // ───────────────────────── 0.1.7 verification capacity ─────────────────────────
 
 test('0.1.7: skeptic turn cap is 20 in the calibration card', () => {
