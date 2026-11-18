@@ -844,6 +844,8 @@ function dedupClaims(claims, keys) {
     g.blast = Math.max(g.blast || 0, c.blast || 0)
     if (Number.isInteger(c.floor)) g.floor = Math.max(Number.isInteger(g.floor) ? g.floor : -1, c.floor)
     if (c.producer && g.producer && mr(c.producer.model) > mr(g.producer.model)) g.producer = c.producer
+    // Critic notes of a merged claim reach the one skeptic that judges the group.
+    for (const k of ['criticNote', 'criticCorrection']) if (c[k] && c[k] !== g[k]) g[k] = [g[k], c[k]].filter(Boolean).join(' | ')
   }
   return out
 }
@@ -1196,6 +1198,8 @@ const b2Pending = new Set(V.units.filter(u => u.fbCell && u.v && u.v.B === 2).ma
 const ledger = { units: [], verifiers: [], inspectors: [], sweeps: [], critics: [], cells: {}, reroutes: 0, gapRuns: 0, verifierRetries: 0, promotions: [], rescued: 0 }
 // Gaps a critic named that no gap re-run covered (already re-routed, reserve refused, run failed).
 const uncovered = []
+// Non-material critic gaps that point at no finding: not escalated, but never dropped silently.
+const notes = []
 const unitResults = {}
 let claims = []
 // Union of every unit's scope files, for canonicalizing evidence that isn't tied to one unit
@@ -1349,6 +1353,7 @@ function finishUnit(L, u, outcome, reason, res, c, producer, rescue) {
       reason: saved ? `producer unit failed: ${reason || ''}`.trim() : outcome === 'unverified' || outcome === 'brief' ? `unit ${outcome}: ${reason || ''}`.trim() : null,
       rescued: saved ? `producer unit failed: ${reason || ''}`.trim() : null,
       criticNote: f.overstated || null,
+      criticCorrection: f.criticCorrection || null,
     }) })
   }
   return L
@@ -1421,6 +1426,19 @@ async function runUnit(u) {
   // and its note goes to the skeptic. A material gap, or coverage < 0.75 on a recall-critical
   // unit, spends the unit's ONE re-route as a gap re-run (fb, or p when fb is null) paid from
   // R; its findings are added. Gaps no re-run covered go to digest.uncovered, never silently.
+  // Non-material gaps are not escalated, but they are kept: a gap whose evidence points at a
+  // finding (same file, within 3 lines) reaches that finding's skeptic as a correction to check
+  // (a miscomputed failure value, a wider trigger); the rest are listed in digest.notes.
+  const keepNotes = (gaps, res) => {
+    for (const g of gaps) {
+      const e = g.evidence
+      const file = e && e.file ? toScope(e.file, u.scope.files) : null
+      const line = e && Number.isFinite(e.line) ? e.line : null
+      const f = file && line !== null && (res.findings || []).find(x => (x.evidence || []).some(v => v && toScope(v.file, u.scope.files) === file && Number.isFinite(v.line) && Math.abs(v.line - line) <= 3))
+      if (f) f.criticCorrection = [f.criticCorrection, `${g.area}: ${g.why}`].filter(Boolean).join(' | ')
+      else notes.push({ unit: u.id, area: g.area, why: g.why, file, line })
+    }
+  }
   const gate = async (outcome, res, c, producer) => {
     if (!u.critic) return finishUnit(L, u, outcome, null, res, c, producer)
     const k = await unitCritic(u, res)
@@ -1432,7 +1450,7 @@ async function runUnit(u) {
       if (f) f.overstated = String(x.why || 'filed too high')
     }
     const lowCov = recallCritical(u) && typeof k.coverage === 'number' && k.coverage < 0.75
-    if (!k.gaps.some(g => g.material) && !lowCov) return finishUnit(L, u, outcome, null, res, c, producer)
+    if (!k.gaps.some(g => g.material) && !lowCov) { keepNotes(k.gaps, res); return finishUnit(L, u, outcome, null, res, c, producer) }
     const gaps = k.gaps.length ? k.gaps : [{ area: 'scope coverage', why: `critic coverage ${k.coverage}`, material: false, evidence: null }]
     L.gapsFound = gaps.length
     const leave = cause => { for (const g of gaps) uncovered.push({ unit: u.id, area: g.area, why: g.why, cause }) }
@@ -1603,6 +1621,7 @@ async function runBatch(b) {
       ...(c.trigger ? [`  filed trigger: ${c.trigger}, impact: ${c.impact || '?'}`] : []),
       `  evidence: ${(c.evidence || []).map(e => `${e.file}:${e.line} "${e.quote}"`).join('; ') || '(none)'}`,
       ...(c.criticNote ? [`  note: a reviewer thinks this may be overstated because ${c.criticNote}`] : []),
+      ...(c.criticCorrection ? [`  note: an outcome critic adds (check it; state any corrected input or value in your reason): ${c.criticCorrection}`] : []),
     ].join('\n')).join('\n')
     const prompt = [A.shared || '', '', SKEPTIC_RULES, lenses[i] ? `\n${lenses[i]}` : '', '', 'Claims:', list, '', tag].join('\n')
     const o = { label: `verify:${b.id}·${b.rung}·${cellKey(b.cell)}`, phase: 'Verify', schema: VERDICT, agentType: AT.skeptic }
@@ -1739,6 +1758,7 @@ const digest = {
     rescued: claims.filter(c => c.rescued).length,
     critics: ledger.critics.filter(k => !k.skipped).length,
     gapsFound: ledger.units.reduce((t, l) => t + (l.gapsFound || 0), 0), gapReruns: ledger.gapRuns, uncovered: uncovered.length,
+    notes: notes.length, corrections: claims.filter(c => c.criticCorrection).length,
     bySeverity: Object.fromEntries(SEVERITIES.map(s => [s, claims.filter(c => effSev(c) === s).length])),
   },
   waiver: V.waiver || null,
@@ -1755,7 +1775,7 @@ const digest = {
     committedUsd: round2(money.committed + money.verifySpent), rerouteUsd: round2(money.rerouteUsd), verifyUsd: round2(money.verifySpent), outputTokens: budget.spent() - out0,
     note: 'estimates from the price model; run scripts/ledger-cost.mjs for actuals. outputTokens counts output only',
   },
-  warnings, dropped, invariants, critic: critique, uncovered,
+  warnings, dropped, invariants, critic: critique, uncovered, notes,
 }
 log(`done: ${digest.counts.ok + digest.counts.okRerouted + digest.counts.okPromoted}/${digest.counts.units} units ok, ${ledger.reroutes} re-route(s), ${digest.counts.claims} claim(s): ${digest.counts.confirmed} confirmed / ${digest.counts.overstated} overstated / ${digest.counts.refuted} refuted / ${digest.counts.unverifiedClaims} unverified; committed $${digest.money.committedUsd} + reserve used $${digest.money.rerouteUsd}`)
 return {
@@ -1770,7 +1790,7 @@ return {
       trigger: c.trigger || null, impact: c.impact || null, verifiedTrigger: c.verifiedTrigger || null, verifiedImpact: c.verifiedImpact || null, title: c.title, claim: c.claim,
       evidence: c.evidence, rung: c.rung || null, verdict: c.verdict, verdictBy: c.verdictBy || null, reason: c.reason || null,
       counter_quote: c.counter_quote || null, support: c.support || null, support_cmd: c.support_cmd || null, parity: !!c.parity, producer: c.producer || null, bump: c.bump || 0,
-      blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, rescued: c.rescued || null, criticNote: c.criticNote || null, mergedFrom: c.mergedFrom || null, merged: c.merged || null,
+      blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, rescued: c.rescued || null, criticNote: c.criticNote || null, criticCorrection: c.criticCorrection || null, mergedFrom: c.mergedFrom || null, merged: c.merged || null,
     })),
   },
 }

@@ -1329,6 +1329,39 @@ test('0.1.7: low coverage on a recall-critical unit escalates; full coverage wit
   assert.equal(fine.calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 1)
 })
 
+test('0.1.7: non-material gaps are kept: one at a finding reaches its skeptic, the rest go to digest.notes', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 16, 'high', 'loop skips last item')] }),
+    'k:u1:1': { coverage: 0.9, overstated: [], gaps: [
+      { area: 'stated failure value is wrong', why: 'total([500]) is 514, not 515', material: false, evidence: { file: 'u1.py', line: 17, quote: 'for i in range' } },
+      { area: 'rounding', why: 'round() is half-to-even', material: false, evidence: { file: 'src/u1.py', line: 9, quote: 'round(' } },
+      { area: 'boundary', why: 'checked, no defect', material: false },
+    ] },
+  }))
+  assert.equal(res.ledger.gapRuns, 0, 'non-material gaps do not escalate')
+  assert.equal(calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 1)
+  const claim = res.results.claims.find(c => c.cid === 'u1.f1')
+  assert.match(claim.criticCorrection, /514, not 515/)
+  assert.equal(claim.criticNote, null, 'a correction is not an overstated flag')
+  const skeptic = calls.find(c => tagOf(c.prompt).startsWith('v:') && c.prompt.includes('u1.f1 |'))
+  assert.match(skeptic.prompt, /an outcome critic adds[^\n]*514, not 515/)
+  assert.deepEqual(res.digest.notes.map(n => n.area), ['rounding', 'boundary'])
+  assert.equal(res.digest.notes[0].file, 'src/u1.py')
+  assert.equal(res.digest.notes[1].file, null)
+  assert.equal(res.digest.counts.notes, 2)
+  assert.equal(res.digest.counts.corrections, 1)
+  assert.equal(res.digest.counts.uncovered, 0)
+})
+
+test('0.1.7: a merged duplicate keeps its critic notes', () => {
+  const mk = (cid, unit, note, corr) => ({ cid, unit, severity: 'high', title: 'loop skips last item', claim: 'x', evidence: [{ file: 'src/a.py', line: 16, quote: 'q' }], producer: { model: 'opus' }, criticNote: note, criticCorrection: corr })
+  const out = core.dedupClaims([mk('u1.f1', 'u1', null, 'value is 514'), mk('u2.f1', 'u2', 'only in tests', 'sign wider')], ['file', 'line'])
+  assert.equal(out.length, 1)
+  assert.equal(out[0].criticNote, 'only in tests')
+  assert.equal(out[0].criticCorrection, 'value is 514 | sign wider')
+})
+
 test('0.1.7: a parity unit (fb null) runs its gap re-run on p', async () => {
   const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V0 B2 G0', p: { model: 'opus', effort: 'xhigh' }, fb: null })] })
   const { res, calls } = await runFanout(a, responder({ 'k:u1:1': gapCritic() }))

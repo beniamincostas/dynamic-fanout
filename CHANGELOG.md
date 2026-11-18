@@ -61,6 +61,22 @@ The build's whole-diff review said NEEDS CHANGES. Two fixes, with tests:
   and appears in `digest.uncovered` as an unresolved gap finding. The original result's
   `remaining` items survive the merge.
 
+### Smoke-test follow-up
+The end-to-end smoke run (two review units over a module with four planted bugs and one
+decoy) found all four, refuted none and left the decoy alone. Its critics named five gaps,
+all non-material, and the run threw every one away. Two of them corrected a finding's stated
+failure value, and one showed that a sign bug reached further than reported. Now, with tests:
+- **Non-material critic gaps are kept.** One whose evidence points at a finding (same file,
+  within 3 lines) reaches that finding's skeptic as `criticCorrection`, with a request to state
+  the corrected input or value. The rest are listed in `digest.notes`. `counts.notes` and
+  `counts.corrections` count them, and step 6 of the skill says what to do with `uncovered`
+  and `notes`.
+- **A merged duplicate keeps its critic notes.** Before this change, dedup dropped the second
+  claim's `criticNote`. It is now joined into the kept claim's note, so the group's one skeptic
+  sees both.
+- The RESULT docs now list `digest.uncovered`, `digest.notes`, the 0.1.7 counts, and
+  `criticNote`/`criticCorrection` on claims.
+
 ## dynamic-fanout 0.1.6 — 2026-10-21
 
 From one production run: a UX and automation review of a report workbook (3 units, 63 claims,
