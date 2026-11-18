@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -70,3 +70,24 @@ test('guard fails open on bad input', () => {
     assert.equal(r.out, '')
   }
 })
+
+test('guard: a saved hand-written workflow called by name is read and guarded like a script', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'df-hook-name-'))
+  const wfd = join(dir, '.claude', 'workflows')
+  require_mkdir(wfd)
+  writeFileSync(join(wfd, 'my-review.js'), "await agent('review everything')\n")
+  writeFileSync(join(wfd, 'routed.js'), "await workflow('dynamic-fanout:fanout', a)\n")
+  const denied = run({ ...wf({ name: 'my-review' }), cwd: dir })
+  assert.equal(denied.json.hookSpecificOutput.permissionDecision, 'deny')
+  assert.equal(run({ ...wf({ name: 'routed' }), cwd: dir }).out, '')
+})
+
+test('guard: a named workflow it cannot read (another plugin, built-in) passes with a note, never silently', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'df-hook-name-'))
+  const r = run({ ...wf({ name: 'other-plugin:thing' }), cwd: dir })
+  assert.equal(r.code, 0)
+  assert.equal(r.json.hookSpecificOutput.permissionDecision, undefined)
+  assert.match(r.json.hookSpecificOutput.additionalContext, /could not|not a saved script/)
+})
+
+function require_mkdir(p) { mkdirSync(p, { recursive: true }) }
