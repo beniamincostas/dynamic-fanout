@@ -204,11 +204,11 @@ node <base>/../../scripts/check-evidence.mjs <output-file> --root <session-cwd> 
  && node <base>/../../scripts/report.mjs <output-file>.audited.json --min-severity medium
 ```
 
-**Deep runs** have two outputs. Run `check-evidence` on the verify-stage output, `ledger-cost` on both transcript dirs, and `stats update` on the work-stage output with its `results.claims` replaced by the audited verify-stage claims (a one-line `node -e` merge into `<work-output>.merged.json`). The verify output alone has no units, and stats skips it.
+**Deep runs** have two outputs. Run `check-evidence` on the verify-stage output, `ledger-cost` on both transcript dirs, and `stats update` on the work-stage output with `--also <verify-output>.audited.json` (its verdicts and verifier batches are merged in by cid) and one `--ledger` per stage's `.cost.json` (summed by kind). The verify output alone has no units, and stats skips it.
 
 - `check-evidence` only ever **downgrades**: a claim whose quote does not exist becomes UNVERIFIED.
 - `ledger-cost` gives the actual dollars per unit and per model (read the `.cost.json`).
-- `stats` records first-pass success per cohort, and with `--ledger` the actual ÷ estimate ratio per role (work, sweep, verify, inspect, implement), keyed by price model, that becomes the next run's `CALIB` `scaleByRole`.
+- `stats` records first-pass success per cohort, and with `--ledger` the actual ÷ estimate ratio per role (work, sweep, verify, inspect, implement), keyed by price model, that becomes the next run's `CALIB` `scaleByRole`. It also records quality per cohort (refuted, overstated, rated lower by verification, gaps found, gap re-runs, the critic's mean coverage); `--summary` prints a QUALITY table by role x cell, and `PROMOTE QUALITY` (n ≥ 4 and refuted+overstated ≥ 25% or gap rate ≥ 50%) says to start that cohort on its fb.
 - `report` prints the audited claims (with each skeptic's support) for the synthesis; read nothing else from the JSON.
 - Spot-read at most 3 snippets of ≤60 lines, and only to settle a split V4 verdict or a high-impact conflict.
 

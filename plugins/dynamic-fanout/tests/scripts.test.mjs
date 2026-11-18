@@ -735,3 +735,123 @@ describe('check-evidence: OVERSTATED (0.1.7)', () => {
     assert.equal(ce.audit(res, { root: ROOT }).claims[0].verdict, 'UNVERIFIED');
   });
 });
+
+// ---------------------------------------------------------------- stats: quality (0.1.7)
+describe('stats: routing learns quality (0.1.7)', () => {
+  const KEY = 'review/review/D2V1B1T1/opus·medium/omit';
+  const unitL = (id, extra = {}) => ({ id, role: 'review', vec: 'D2 V1 B1 T1', p: 'opus·medium', fb: 'opus·high', ctx: 'omit', outcome: 'ok', attempts: [{ kind: 'primary', cls: null, estUsd: 1 }], ...extra });
+  const qualityRun = () => ({
+    card: { kind: 'review', S: 'opus', calib: { pm: st.PRICE_MODEL } },
+    ledger: {
+      units: [
+        unitL('a', { attempts: [{ kind: 'primary', cls: null, estUsd: 1 }, { kind: 'gap', cls: 'gap', estUsd: 0.5 }], critic: { coverage: 0.5, gaps: 2, overstated: 1 }, gapsFound: 2 }),
+        unitL('b', { critic: { coverage: 0.9, gaps: 0, overstated: 0 } }),
+      ],
+      verifiers: [], inspectors: [], sweeps: [], gapRuns: 1, reroutes: 0,
+    },
+    results: {
+      units: {},
+      claims: [
+        { cid: 'a.f1', unit: 'a', severity: 'high', verifiedSeverity: 'medium', verdict: 'OVERSTATED' },
+        { cid: 'a.f2', unit: 'a', severity: 'low', verdict: 'REFUTED' },
+        { cid: 'b.f1', unit: 'b', severity: 'medium', verifiedSeverity: 'medium', verdict: 'CONFIRMED' },
+      ],
+    },
+  });
+
+  test('update records refuted, overstated, verifiedLower, gaps, gap re-runs and critic coverage per cohort', () => {
+    const s = st.applyRun(st.emptyStats(), qualityRun(), { runId: 'q1' });
+    const q = s.cohorts[KEY].q;
+    assert.deepEqual([q.refuted, q.overstated, q.verifiedLower, q.gapUnits, q.gapsFound, q.gapReruns, q.covN], [1, 1, 1, 1, 2, 1, 2]);
+    near(q.covSum, 1.4);
+  });
+
+  test('quality counters decay x0.9 like the rest', () => {
+    const s = st.applyRun(st.emptyStats(), qualityRun());
+    st.applyRun(s, qualityRun());
+    const q = s.cohorts[KEY].q;
+    near(q.refuted, 1.9);
+    near(q.gapsFound, 3.8);
+    near(q.covSum / q.covN, 0.7);
+  });
+
+  test('a cohort stored before 0.1.7 (no q) still takes a run', () => {
+    const s = st.emptyStats();
+    s.cohorts[KEY] = { n: 2, firstPassOk: 2, rerouted: 0, refutedLater: 0, unverified: 0, conf: { hi: { n: 0, ok: 0 }, lo: { n: 0, ok: 0 } }, fb: {} };
+    st.applyRun(s, qualityRun());
+    assert.equal(s.cohorts[KEY].q.refuted, 1);
+  });
+
+  test('PROMOTE QUALITY fires on refuted+overstated >= 25% or gap rate >= 50% at n>=4, else stays quiet', () => {
+    const s = st.emptyStats();
+    for (let i = 0; i < 3; i++) st.applyRun(s, qualityRun());   // n = 2 x (1 + .9 + .81) = 5.42
+    const hit = st.rules(s, 'review').find((h) => h.rule === 'PROMOTE QUALITY');
+    assert.equal(hit.role, 'review');
+    assert.equal(hit.cell, 'opus·medium');
+    assert.equal(hit.fb, 'opus·high');
+    const base = { firstPassOk: 4, rerouted: 0, refutedLater: 0, unverified: 0, conf: { hi: { n: 0, ok: 0 }, lo: { n: 0, ok: 0 } }, fb: {} };
+    const q0 = { refuted: 0, overstated: 0, verifiedLower: 0, gapUnits: 0, gapsFound: 0, gapReruns: 0, covSum: 0, covN: 0 };
+    const quiet = st.emptyStats();
+    quiet.cohorts[KEY] = { ...base, n: 5, q: { ...q0, refuted: 1, gapUnits: 2 } };   // 20%, 40%
+    assert.ok(!st.rules(quiet, 'review').some((h) => h.rule === 'PROMOTE QUALITY'));
+    const small = st.emptyStats();
+    small.cohorts[KEY] = { ...base, n: 3, q: { ...q0, refuted: 3 } };                 // n < 4
+    assert.ok(!st.rules(small, 'review').some((h) => h.rule === 'PROMOTE QUALITY'));
+    const gappy = st.emptyStats();
+    gappy.cohorts[KEY] = { ...base, n: 4, q: { ...q0, gapUnits: 2 } };               // gap 50%
+    assert.ok(st.rules(gappy, 'review').some((h) => h.rule === 'PROMOTE QUALITY'));
+  });
+
+  test('--summary prints a QUALITY table by role x cell and the PROMOTE QUALITY line; CALIB stays', () => {
+    const s = st.emptyStats();
+    for (let i = 0; i < 3; i++) st.applyRun(s, qualityRun());   // n = 2 x (1 + .9 + .81) = 5.42
+    const out = st.summary(s, 'review');
+    assert.match(out, /QUALITY \(role x cell\)\s+n\s+refuted%\s+overstated%\s+gap%\s+coverage/);
+    assert.match(out, /\n {2}review {2}opus·medium {2}n=5\.4 {2}50% {2}50% {2}50% {2}0\.70/);
+    assert.match(out, /PROMOTE QUALITY role=review cell=opus·medium: .*-> start this cohort on its fb opus·high/);
+    assert.ok(out.split('\n').length <= 40);
+    const dir = tmpDir();
+    const file = path.join(dir, 's.json');
+    s.calib = { pm: st.PRICE_MODEL, scaleByRole: { work: 1.2 }, nByRole: { work: 1 }, lastByRole: {} };
+    fs.writeFileSync(file, JSON.stringify(s));
+    const r = run('stats.mjs', ['--summary', 'review', '--file', file]);
+    assert.match(r.stdout, /QUALITY/);
+    assert.match(r.stdout, /CALIB \{"pm":\d+,"scaleByRole":\{"work":1\.20\}\}/);
+  });
+
+  test('mergeLedgerJsons sums byKind and byTag across files', () => {
+    const m = st.mergeLedgerJsons([
+      { byKind: { work: { usd: 1, messages: 2 } }, byTag: { 'df:a:1': { usd: 1 } } },
+      { byKind: { work: { usd: 2, messages: 1 }, verifier: { usd: 3 } } },
+    ]);
+    assert.deepEqual(m.byKind, { work: { usd: 3, messages: 3 }, verifier: { usd: 3 } });
+    assert.deepEqual(m.byTag, { 'df:a:1': { usd: 1 } });
+    assert.equal(st.mergeLedgerJsons([{ totals: {} }]).byKind, undefined);
+  });
+
+  test('mergeVerifyStage brings the verify stage\'s verdicts and verifier cost into the work result', () => {
+    const verify = { ledger: { verifiers: [{ tag: 'v1', estUsd: 0.4 }, { tag: 'v2', estUsd: 0.6 }] }, results: { claims: [{ cid: 'b.f1', verdict: 'REFUTED', verdictBy: 'skeptic' }] } };
+    const m = st.mergeVerifyStage(qualityRun(), verify);
+    near(st.estimatedUsdByRole(m).verify, 1);
+    assert.equal(m.results.claims.find((c) => c.cid === 'b.f1').verdict, 'REFUTED');
+    assert.equal(m.ledger.units.length, 2);
+  });
+
+  test('CLI: repeated --ledger and --also feed verify verdicts and verify calibration', () => {
+    const dir = tmpDir();
+    const files = {
+      work: path.join(dir, 'work.json'), verify: path.join(dir, 'verify.json'),
+      l1: path.join(dir, 'l1.json'), l2: path.join(dir, 'l2.json'), stats: path.join(dir, 'stats.json'),
+    };
+    fs.writeFileSync(files.work, JSON.stringify(qualityRun()));
+    fs.writeFileSync(files.verify, JSON.stringify({ ledger: { verifiers: [{ tag: 'v1', estUsd: 1 }] }, results: { claims: [{ cid: 'b.f1', verdict: 'REFUTED', verdictBy: 'skeptic' }] } }));
+    fs.writeFileSync(files.l1, JSON.stringify({ byKind: { work: { usd: 1.5 } } }));
+    fs.writeFileSync(files.l2, JSON.stringify({ byKind: { verifier: { usd: 2 } } }));
+    const r = run('stats.mjs', ['update', files.work, '--file', files.stats, '--also', files.verify, '--ledger', files.l1, '--ledger', files.l2]);
+    assert.equal(r.status, 0, r.stderr);
+    const s = JSON.parse(fs.readFileSync(files.stats, 'utf8'));
+    assert.equal(s.cohorts[KEY].q.refuted, 2);                  // a (work stage) + b (verify stage)
+    near(s.calib.lastByRole.verify.ratio, 2);                  // actual 2 / estimate 1
+    near(s.calib.lastByRole.work.ratio, 1.5 / 2.5);            // both ledgers summed by kind
+  });
+});

@@ -181,3 +181,14 @@ test('0.1.7: worker and implementer bodies forbid citing scratchpad copies', () 
     assert.match(read(dir, f), /never cite a scratchpad or temp copy/, f);
   }
 });
+
+test('0.1.7: SKILL.md states the stats quality rule, --also and repeated --ledger as stats.mjs implements them', async () => {
+  const st = await import('../scripts/stats.mjs');
+  const q = st.QUALITY;
+  assert.match(SKILL, new RegExp(`PROMOTE QUALITY\` \\(n ≥ ${q.promoteN} and refuted\\+overstated ≥ ${q.refutedOverstated * 100}% or gap rate ≥ ${q.gapRate * 100}%\\)`));
+  assert.match(SKILL, /--also <verify-output>\.audited\.json/);
+  assert.match(SKILL, /one `--ledger` per stage/);
+  const src = read(PLUGIN, 'scripts', 'stats.mjs');
+  assert.match(src, /t === '--also'/);
+  assert.match(src, /a\.ledgers\.push/);
+});
