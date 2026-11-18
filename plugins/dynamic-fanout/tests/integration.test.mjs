@@ -119,6 +119,7 @@ function reviewResponder(prompt) {
     ] });
   }
   if (tag.startsWith('s:')) return okUnit();
+  if (tag.startsWith('k:')) return { coverage: 0.9, gaps: [], overstated: [] };
   switch (tag) {
     case 'r1:1':
       return okUnit({ files_read: ['src/invoice.py'], confidence: 0.9, findings: [
@@ -277,10 +278,11 @@ describe('integration: ledger-cost attributes every real foreman prompt', async 
     assert.equal(L.byKind.inspector.agents, run.res.ledger.inspectors.length);
     assert.equal(L.byKind.verifier.agents, run.res.ledger.verifiers.length);
     assert.equal(L.byKind.sweep.agents, run.res.ledger.sweeps.length);
+    assert.equal(L.byKind['outcome-critic'].agents, run.res.ledger.critics.length);
     assert.deepEqual(Object.keys(L.byUnit).sort(), ['r1', 'r2', 'r3', 'r4']);
     // the foreman ledger writes tags with their brackets; ledger-cost keys them as 'df:<inner>'
     for (const a of attempts) assert.ok(L.byTag[a.tag.replace(/^⟦|⟧$/g, '')], `${a.tag} has no actuals`);
-    assert.equal(L.byUnit.r2.agents, 3, 'primary + re-route + inspector of the re-route');
+    assert.equal(L.byUnit.r2.agents, 4, 'primary + re-route + inspector of the re-route + outcome critic');
     assert.deepEqual(Object.keys(L.byModel).sort(), ['opus', 'sonnet']);
   });
 });

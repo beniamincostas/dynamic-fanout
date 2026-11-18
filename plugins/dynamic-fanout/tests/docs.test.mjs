@@ -60,9 +60,13 @@ test('0.1.5 defaults: rerouteRate 0.2 and the role priors are stated in the docs
   assert.equal(rate, '0.2');
   assert.match(read(REFS, 'routing.md'), new RegExp('instead of ' + rate.replace('.', '\\.')));
   const priors = FANOUT.match(/\n  scaleByRole: (\{[^}]*\})/)[1];
-  assert.equal(priors, '{ work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0 }');
-  assert.match(read(REFS, 'economics.md'), /`\{work: 1\.0, verify: 0\.3, inspect: 0\.3, sweep: 2\.0, implement: 2\.0\}`/);
+  assert.equal(priors, '{ work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0, critic: 0.5 }');
+  assert.match(read(REFS, 'economics.md'), /`\{work: 1\.0, verify: 0\.3, inspect: 0\.3, sweep: 2\.0, implement: 2\.0, critic: 0\.5\}`/);
   assert.match(read(REFS, 'economics.md'), /`rerouteRate`[^\n]*0\.2/);
+  // 0.1.7: the gap re-run rate behind R
+  const gapRate = FANOUT.match(/caps\.gapRate : ([\d.]+)/)[1];
+  assert.equal(gapRate, '0.3');
+  assert.match(read(REFS, 'economics.md'), new RegExp('`gapRate` defaults to ' + gapRate.replace('.', '\\.')));
   // Every scaleByRole object literal in economics.md (the defaults block included) states the code's priors.
   for (const m of read(REFS, 'economics.md').matchAll(/scaleByRole: (\{[^}]*\})/g)) assert.equal(m[1], priors, 'economics.md scaleByRole block');
 });
