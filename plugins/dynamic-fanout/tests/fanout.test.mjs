@@ -39,6 +39,7 @@ function responder(map = {}) {
     if (tag.startsWith('v:')) return verdictAll(prompt, 'CONFIRMED')
     if (tag.startsWith('s:')) return okUnit()
     if (tag.startsWith('c:')) return { missing: [] }
+    if (tag.startsWith('k:')) return { coverage: 1, gaps: [], overstated: [] }
     const files = [...prompt.matchAll(/^- (\S+)$/gm)].map(m => m[1])
     return okUnit({ files_read: files })
   }
@@ -694,7 +695,7 @@ test('ownership: every launched cell is on a card or a declared verifier/inspect
     for (const L of res.ledger.units) {
       const work = L.attempts.filter(x => x.kind !== 'rederive-planned' && x.cls !== 'refused')
       assert.ok(work.length <= 4, `${L.id}: at most primary + infra + capacity + re-route`)
-      assert.ok(L.attempts.filter(x => x.kind === 'reroute').length <= 1, `${L.id}: at most one re-route`)
+      assert.ok(L.attempts.filter(x => x.kind === 'reroute' || x.kind === 'gap').length <= 1, `${L.id}: at most one re-route (capability or gap)`)
     }
   }
 })
@@ -814,7 +815,7 @@ const near = (x, y, msg) => assert.ok(Math.abs(x - y) <= 1.5e-4, `${msg || ''} $
 
 test('per-role calibration: agentOpts carries the role; estimates scale by role × global scale', () => {
   const K = core.calibrate()
-  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 })
   assert.equal(K.scale, 1)
   assert.equal(core.agentOpts('implementer', K).role, 'implement')
   for (const k of ['worker', 'workerMcp', 'workerCtx']) assert.equal(core.agentOpts(k, K).role, 'work', k)
@@ -837,18 +838,18 @@ test('per-role calibration: agentOpts carries the role; estimates scale by role 
 
 test('calibrate merges scaleByRole like the other object fields', () => {
   const K = core.calibrate({ pm: 3, scaleByRole: { verify: 0.5 }, scale: 1.2, highsPerUnit: 2 })
-  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.5, inspect: 0.3, sweep: 2, implement: 2.0 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.5, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 })
   assert.equal(K.scale, 1.2)
   assert.equal(K.highsPerUnit, 2)
   assert.equal(K.mediumsPerUnit, 5)
-  assert.deepEqual(core.calibrate().scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 }, 'defaults are not mutated')
+  assert.deepEqual(core.calibrate().scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 }, 'defaults are not mutated')
 })
 
 test('the priced card carries the calibration factors it used', async () => {
   let { res } = await runFanout(baseArgs({ dryRun: true }), responder())
-  assert.deepEqual(res.card.calib, { pm: 3, scale: 1, scaleByRole: { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 } })
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1, scaleByRole: { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 } })
   ;({ res } = await runFanout(baseArgs({ dryRun: true, calib: { pm: 3, scale: 1.5, scaleByRole: { verify: 0.2 } } }), responder()))
-  assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 1, verify: 0.2, inspect: 0.3, sweep: 2, implement: 2.0 } })
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 1, verify: 0.2, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 } })
 })
 
 test('medium defaults to rung V2 (0.1.4): one skeptic per medium', async () => {
@@ -954,7 +955,7 @@ test('price model 3: leak-free defaults', () => {
   assert.equal(K.ultraReadFactor, 4, 'ultracode agents read with Read and still get the nested CLAUDE.md')
   assert.equal(K.verifierInFrac, 0.25)
   assert.equal(K.sweepInFrac, 0.25)
-  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 })
 })
 
 test('sweep is priced on its own role and a fraction of inAvg; the deep critic stays work', async () => {
@@ -1254,4 +1255,129 @@ test('rail: lenses must be 1 or 2, only on review/research cards, never with n:1
   b.units[1] = { ...b.units[1], n: 1, check: 'tieout+rederive', lenses: 2 }
   await rejects(b, /^card u2: lenses 2 is only for kind review or research/)
   await rejects(b, /^card u2: lenses 2 cannot be combined with n:1/)
+})
+
+// ───────────────────────── 0.1.7: outcome critic + gap escalation ─────────────────────────
+
+const gapCritic = (over = {}) => ({ coverage: 0.5, gaps: [{ area: 'error paths', why: 'never looked at', material: true }], overstated: [], ...over })
+
+test('0.1.7: critic trigger rules', () => {
+  const ids = a => core.validate(a).units.filter(u => u.critic).map(u => u.id)
+  const units = [
+    unit('plain', { vec: 'D1 A0 T1 C0 V1 B0 G0' }),
+    unit('v0', { vec: 'D1 A0 T1 C0 V0 B0 G0' }),
+    unit('blast', { vec: 'D1 A0 T1 C0 V2 B1 G0' }),
+    unit('asked', { vec: 'D1 A0 T1 C0 V2 B0 G0', check: 'set+critic' }),
+  ]
+  assert.deepEqual(ids(baseArgs({ units })), ['v0', 'blast', 'asked'])
+  assert.deepEqual(ids(baseArgs({ kind: 'research', units })), ['v0', 'blast', 'asked'])
+  assert.deepEqual(ids(baseArgs({ kind: 'data', units })), ['asked'], 'data: only an explicit critic check')
+  assert.deepEqual(ids(baseArgs({ kind: 'data', quality: 'max', units })), ['plain', 'v0', 'blast', 'asked'])
+  const V = core.validate(baseArgs({ units }))
+  assert.equal(core.cellKey(V.unitCriticCell), 'opus·medium', 'default critic cell W·medium')
+  const V2 = core.validate(baseArgs({ units, critic: { cell: { model: 'sonnet', effort: 'high' } } }))
+  assert.equal(core.cellKey(V2.unitCriticCell), 'sonnet·high')
+  assert.ok(core.validate(baseArgs({ units, quality: 'best' })).errors.some(e => /^args: quality/.test(e)))
+})
+
+test('0.1.7: critics and expected gap re-runs are priced; the card carries a critic row', async () => {
+  const K = core.calibrate()
+  assert.equal(K.scaleByRole.critic, 0.5)
+  const solo = [unit('a', { vec: 'D1 A0 T1 C0 V1 B0 G0' })]
+  const crit = [unit('a', { vec: 'D1 A0 T1 C0 V1 B1 G0' })]
+  const { res: r0 } = await runFanout(baseArgs({ units: solo, dryRun: true }), responder())
+  const { res: r1 } = await runFanout(baseArgs({ units: crit, dryRun: true }), responder())
+  assert.equal(r0.card.critic.units.length, 0)
+  assert.deepEqual(r1.card.critic.units, ['a'])
+  assert.equal(r1.card.critic.cell, 'opus·medium')
+  assert.ok(r1.card.critic.estUsd > 0 && r1.card.critic.expectedGapReruns > 0)
+  assert.ok(r1.card.money.P > r0.card.money.P, 'P includes the critic')
+  assert.ok(r1.card.money.R >= r0.card.money.R, 'R includes expected gap re-runs')
+  assert.equal(r1.card.units[0].critic, true)
+})
+
+test('0.1.7: a material gap re-runs the unit once on fb, gaps only; findings are added', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 3, 'medium', 'first issue')] }),
+    'k:u1:1': gapCritic(),
+    'u1:2': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 40, 'medium', 'gap issue')] }),
+  }))
+  const critic = calls.find(c => tagOf(c.prompt) === 'k:u1:1')
+  assert.ok(critic, 'critic ran')
+  assert.equal(critic.opts.agentType, 'dynamic-fanout:skeptic')
+  assert.match(critic.prompt, /f1 \| medium \| first issue \| src\/u1\.py:3 \|/)
+  const gap = calls.find(c => tagOf(c.prompt) === 'u1:2')
+  assert.ok(gap, 'gap run launched')
+  assert.equal(cellOfCall(gap.opts), 'opus·high', 'gap run on fb')
+  assert.match(gap.prompt, /do u1/)
+  assert.match(gap.prompt, /Cover ONLY these gaps:[\s\S]*error paths/)
+  assert.match(gap.prompt, /Do not repeat these findings:[\s\S]*first issue/)
+  assert.equal(calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 2, 'no further run')
+  const titles = res.results.claims.filter(c => c.unit === 'u1').map(c => c.title).sort()
+  assert.deepEqual(titles, ['first issue', 'gap issue'])
+  const L = res.ledger.units[0]
+  assert.equal(L.attempts.filter(x => x.kind === 'gap').length, 1)
+  assert.equal(res.ledger.gapRuns, 1)
+  assert.equal(res.ledger.critics.length, 1)
+  assert.equal(res.digest.counts.gapsFound, 1)
+  assert.equal(res.digest.counts.gapReruns, 1)
+  assert.equal(res.digest.counts.uncovered, 0)
+  assert.ok(res.digest.money.rerouteUsd > 0, 'paid from the reserve')
+})
+
+test('0.1.7: low coverage on a recall-critical unit escalates; full coverage without material gaps does not', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V0 B0 G0' })] })
+  const low = await runFanout(a, responder({ 'k:u1:1': { coverage: 0.4, gaps: [{ area: 'config', why: 'skipped', material: false }], overstated: [] } }))
+  assert.equal(low.res.ledger.gapRuns, 1)
+  const fine = await runFanout(a, responder({ 'k:u1:1': { coverage: 0.9, gaps: [{ area: 'style', why: 'minor', material: false }], overstated: [] } }))
+  assert.equal(fine.res.ledger.gapRuns, 0)
+  assert.equal(fine.calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 1)
+})
+
+test('0.1.7: a parity unit (fb null) runs its gap re-run on p', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V0 B2 G0', p: { model: 'opus', effort: 'xhigh' }, fb: null })] })
+  const { res, calls } = await runFanout(a, responder({ 'k:u1:1': gapCritic() }))
+  const gap = calls.find(c => tagOf(c.prompt) === 'u1:2')
+  assert.ok(gap, 'gap run launched')
+  assert.equal(cellOfCall(gap.opts), 'opus·xhigh')
+  assert.equal(res.ledger.gapRuns, 1)
+})
+
+test('0.1.7: a unit already re-routed for capability gets no gap run; its gaps go to uncovered', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ status: 'blocked', blocked_reason: 'too_hard' }),
+    'k:u1:1': gapCritic(),
+  }))
+  assert.equal(res.ledger.units[0].outcome, 'ok-rerouted')
+  assert.equal(calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 2, 'primary + re-route only')
+  assert.equal(res.ledger.gapRuns, 0)
+  assert.deepEqual(res.digest.uncovered.map(x => [x.unit, x.area, x.why]), [['u1', 'error paths', 'never looked at']])
+  assert.equal(res.digest.counts.uncovered, 1)
+})
+
+test('0.1.7: a refused reserve lists the gaps in digest.uncovered, never silently', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })], carry: { rerouteUsd: 1000 } })
+  const { res, calls } = await runFanout(a, responder({ 'k:u1:1': gapCritic() }))
+  assert.equal(calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 1)
+  const L = res.ledger.units[0]
+  assert.equal(L.attempts.find(x => x.kind === 'gap').cls, 'refused')
+  assert.equal(res.digest.uncovered.length, 1)
+  assert.equal(res.digest.uncovered[0].area, 'error paths')
+  assert.match(res.digest.uncovered[0].cause, /reserve/)
+  assert.equal(res.digest.counts.gapReruns, 0)
+})
+
+test('0.1.7: an overstated flag bumps the finding one rung and its note reaches the skeptic', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const prim = okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 3, 'medium', 'big claim'), finding('src/u1.py', 9, 'medium', 'other claim')] })
+  const base = await runFanout(a, responder({ 'u1:1': prim }))
+  const flagged = await runFanout(a, responder({ 'u1:1': prim, 'k:u1:1': { coverage: 0.9, gaps: [], overstated: [{ fid: 'f1', why: 'only reachable from tests' }] } }))
+  const bump = (r, cid) => r.res.results.claims.find(c => c.cid === cid).bump
+  assert.equal(bump(flagged, 'u1.f1'), bump(base, 'u1.f1') + 1)
+  assert.equal(bump(flagged, 'u1.f2'), bump(base, 'u1.f2'))
+  const skeptic = flagged.calls.find(c => tagOf(c.prompt).startsWith('v:') && c.prompt.includes('u1.f1 |'))
+  assert.match(skeptic.prompt, /a reviewer thinks this may be overstated because only reachable from tests/)
+  assert.equal(flagged.res.results.claims.find(c => c.cid === 'u1.f1').criticNote, 'only reachable from tests')
 })

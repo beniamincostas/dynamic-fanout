@@ -82,7 +82,9 @@ const DEFAULT_CALIB = {
   // verification. Implementers keep CLAUDE.md, run test suites and take many turns: priced
   // as work they came out ~1.5-2.2x low on two builds, so they are their own role (prior 2.0). estUsd's structure is unchanged, so PRICE_MODEL stays and learned factors
   // stay valid.
-  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0 },
+  // 0.1.7: the per-unit outcome critic is a lean skeptic that spot-checks one unit's scope
+  // against its findings; it reads less than a verifier batch, so its prior is 0.5.
+  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0, critic: 0.5 },
   // Global extra multiplier on top of scaleByRole (only honoured from the same price model).
   scale: 1,
   // Expected findings per unit, for sizing the verification reserve. Measured: 7 high +
@@ -153,6 +155,16 @@ function checksOf(check) {
 }
 
 const needsInspector = u => u.checks.includes('quote') || (!!u.v && u.v.B === 2)
+// 0.1.7: a blind audit found single passes see about a third of the real issues, and the
+// mechanical checks (quotes, files read, not blocked) never see a miss. A unit whose misses
+// matter (no objective completeness check, V0, or any blast radius, B>=1) gets an outcome
+// critic after it passes classify(); so does any unit whose check names 'critic', and every
+// unit when args.quality is 'max'. Data and implement units only on request.
+const recallCritical = u => !!u.v && (u.v.V === 0 || u.v.B >= 1)
+function needsCritic(u, a) {
+  if (u.checks.includes('critic') || a.quality === 'max') return true
+  return ['review', 'research'].includes(a.kind) && recallCritical(u)
+}
 
 function normPath(p) {
   return String(p || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/{2,}/g, '/').replace(/\/$/, '')
@@ -258,6 +270,7 @@ function validate(a) {
   if (!KINDS.includes(a.kind)) errors.push(`args: kind must be one of ${KINDS.join('|')}`)
   if (a.kind === 'implement' && !a.dryRun) errors.push('args: kind implement runs from the implement playbook\'s inline script (fanout only dry-runs implement cards); call fanout with kind review for the diff review')
   if (!DEPTHS.includes(a.depth)) errors.push(`args: depth must be one of ${DEPTHS.join('|')}`)
+  if (a.quality !== undefined && !['standard', 'max'].includes(a.quality)) errors.push(`args: quality must be standard|max (got ${JSON.stringify(a.quality)})`)
   const stage = a.stage || 'all'
   if (!STAGES.includes(stage)) errors.push(`args: stage must be one of ${STAGES.join('|')}`)
   out.stage = stage
@@ -313,6 +326,7 @@ function validate(a) {
     u.fbCell = cellOf(u.fb, S)
     u.rdCell = u.n ? cellOf(u.rd || u.p, S) : null
     u.checks = checksOf(u.check)
+    u.critic = needsCritic(u, a)
     out.units.push(u)
     if (!u.cell) { errors.push(`card ${id}: p missing`); continue }
 
@@ -417,6 +431,14 @@ function validate(a) {
   else if (er(E) >= 0 && er(out.sweepCell.effort) > er(E)) errors.push(`sweep: effort ${out.sweepCell.effort} is above refEffort ${E}`)
   out.inspCell = { model: mr(S) >= mr('sonnet') ? 'sonnet' : S, effort: 'low' }
   out.criticCell = { model: W, effort: highE }
+  // The per-unit outcome critic (0.1.7); criticCell above is the deep run's completeness critic.
+  out.unitCriticCell = cellOf((a.critic && a.critic.cell) || { model: W, effort: er(E) >= 0 ? minEffort('medium', E) : 'medium' }, S)
+  const kc = out.unitCriticCell
+  if (!kc || mr(kc.model) < 0 || kc.model === 'haiku' || er(kc.effort) < 0) errors.push('critic: cell must be a non-haiku model with an effort')
+  else {
+    if (er(E) >= 0 && er(kc.effort) > er(E)) errors.push(`critic: effort ${kc.effort} is above refEffort ${E}`)
+    if (mr(S) >= 0 && mr(kc.model) > mr(S) && !allowUp) errors.push(`critic: ${kc.model} is above the session model ${S}`)
+  }
 
   const workCells = new Set(out.units.filter(u => u.cell).map(u => cellKey(u.cell)))
   if (workCells.size > 2) warnings.push(`cache: ${workCells.size} distinct primary cells in the work stage (${[...workCells].join(', ')}) — agents share a prompt cache only within a cell; merge the smallest cell up if you can`)
@@ -438,7 +460,10 @@ function price(a, V, K) {
   const workO = agentOpts('worker', K)
   const sweepO = agentOpts('worker', K, 'sweep')
   const sweepIn = inAvg * K.sweepInFrac
+  const critO = agentOpts('skeptic', K, 'critic')
+  const critCellOk = V.unitCriticCell && mr(V.unitCriticCell.model) >= 0 && er(V.unitCriticCell.effort) >= 0
   let P = 0, parityP = 0, plannedOut = 0, plannedAgents = 0, rerouteSum = 0, floor = 0, b2Earmark = 0
+  let criticsUsd = 0, gapSum = 0, critics = 0
   for (const u of V.units) {
     if (!u.cell || mr(u.cell.model) < 0) continue
     u.typeKey = typeKey(u)
@@ -459,7 +484,21 @@ function price(a, V, K) {
       floor = Math.max(floor, u.repairUsd)
       if (u.v && u.v.B === 2) b2Earmark = Math.max(b2Earmark, u.repairUsd)
     }
+    // Outcome critic: a lean skeptic spot-reading a quarter of the unit's planned reading. Its
+    // gap re-run (on fb, or on p for parity units) is the unit's one re-route, paid from R.
+    if (u.critic && critCellOk) {
+      const kIn = u.in * K.verifierInFrac
+      u.criticUsd = estUsd(V.unitCriticCell, kIn, 0, K, critO)
+      criticsUsd += u.criticUsd
+      plannedOut += outTok(V.unitCriticCell, K, turnsFor(V.unitCriticCell, kIn, K, critO.cap))
+      plannedAgents += 1
+      critics += 1
+      u.gapUsd = u.fbCell ? u.repairUsd : estUsd(u.cell, u.in, u.ctxTokEff, K, u.o)
+      gapSum += u.gapUsd
+      floor = Math.max(floor, u.gapUsd)
+    }
   }
+  P += criticsUsd
   const nUnits = V.units.length
   const vcfg = a.verify || {}
   const expected = Number.isInteger(vcfg.expected) ? Math.max(0, vcfg.expected) : expectedVerifiers(nUnits, a.depth, vcfg, V.rungs, K)
@@ -475,7 +514,10 @@ function price(a, V, K) {
   const capPct = typeof caps.reserveCapPct === 'number' ? caps.reserveCapPct : 20
   // The floor (one full repair) wins over the cap: a reserve that cannot pay for a
   // single repair is a promise the foreman could not keep.
-  const R = floor > 0 ? Math.max(floor, Math.min(rate * rerouteSum, (capPct / 100) * P)) : 0
+  // Gap re-runs share R with capability re-routes (still one per unit). Default gapRate 0.3:
+  // the audit's single passes missed most issues, so a critic will often name a material gap.
+  const gapRate = typeof caps.gapRate === 'number' ? caps.gapRate : 0.3
+  const R = floor > 0 ? Math.max(floor, Math.min(rate * rerouteSum + gapRate * gapSum, (capPct / 100) * P)) : 0
   const mult = typeof caps.ceilingMult === 'number' ? caps.ceilingMult : 0.5
   let C = mult * U
   if (caps.parityBound) C = 0.8 * U
@@ -483,6 +525,7 @@ function price(a, V, K) {
   return {
     U: round4(U), P: round4(P), R: round4(R), C: round4(C), mult, parityP: round4(parityP),
     b2Earmark: round4(b2Earmark), plannedOut, plannedAgents, expected, rounds: V.rounds, verifyUsd: round4(verifyUsd), sweepUsd: round4(sweepUsd), criticUsd: round4(criticUsd),
+    critics, criticsUsd: round4(criticsUsd), gapRate, expectedGapReruns: round2(gapRate * critics),
   }
 }
 
@@ -522,11 +565,15 @@ function buildCard(a, V, M, K) {
     units: V.units.map(u => ({
       id: u.id, role: u.role, vec: u.vec, cell: cellKey(u.cell), fb: u.fbCell ? cellKey(u.fbCell) : null,
       rd: u.rdCell ? cellKey(u.rdCell) : null, ctx: u.ctx, check: u.check, why: u.why, parity: u.parity,
-      estUsd: u.estUsd, turns: u.turns, override: u.override || null,
+      estUsd: u.estUsd, turns: u.turns, override: u.override || null, critic: !!u.critic,
       ...(u.lensOf ? { lens: u.lens, lensOf: u.lensOf, note: `lens ${u.lens} of ${u.lensOf} (two-lens split)` } : {}),
     })),
     verify: { rungs: V.rungs, V3: cellKey(V.V3), V4: cellKey(V.V4), expected: M.expected, waiver: V.waiver || null },
     sweep: { rounds: V.rounds, cell: cellKey(V.sweepCell) },
+    critic: {
+      cell: cellKey(V.unitCriticCell), units: V.units.filter(u => u.critic).map(u => u.id),
+      estUsd: round2(M.criticsUsd || 0), expectedGapReruns: M.expectedGapReruns || 0,
+    },
     money: {
       U: round2(M.U), P: round2(M.P), R: round2(M.R), C: round2(M.C), ratio: M.U > 0 ? round2((M.P + M.R) / M.U) : null,
       parityP: round2(M.parityP), parityBound: !!(a.caps && a.caps.parityBound),
@@ -932,6 +979,27 @@ const CRITIC = {
   required: ['missing'],
 }
 
+// Per-unit outcome critic (0.1.7). coverage: share of the scope's real issues the findings cover.
+const UNIT_CRITIC = {
+  type: 'object',
+  properties: {
+    coverage: { type: 'number', minimum: 0, maximum: 1 },
+    gaps: {
+      type: 'array', maxItems: 6,
+      items: {
+        type: 'object',
+        properties: { area: { type: 'string', maxLength: 200 }, why: { type: 'string', maxLength: 200 }, material: { type: 'boolean' }, evidence: EVIDENCE },
+        required: ['area', 'why', 'material'],
+      },
+    },
+    overstated: {
+      type: 'array',
+      items: { type: 'object', properties: { fid: { type: 'string' }, why: { type: 'string', maxLength: 200 } }, required: ['fid', 'why'] },
+    },
+  },
+  required: ['coverage', 'gaps', 'overstated'],
+}
+
 function unitSchema(u) {
   const s = JSON.parse(JSON.stringify(UNIT_RESULT))
   if (u.schema && typeof u.schema === 'object') s.properties.result = u.schema
@@ -985,6 +1053,15 @@ const SKEPTIC_RULES = [
   SEVERITY_RUBRIC,
 ].join('\n')
 
+const UNIT_CRITIC_RULES = [
+  'You are an outcome critic. You judge whether one unit\'s result covers its brief and its scope; you do not redo the work and you do not verify each finding.',
+  '- coverage: your honest estimate (0-1) of the share of the real issues in this scope that the findings below cover.',
+  '- gaps: parts of the brief or scope the unit did not cover (a file not read, a part of the brief skipped, a class of issue never looked for). material = true only when a real issue there is likely; add evidence {file, line, quote} when you saw one. At most 6, most important first.',
+  '- overstated: findings (by fid) that are real but filed too high or claimed too broadly, with why. Rate by the rubric below.',
+  'Spot-check with Bash (`grep -n`, `nl -ba FILE | sed -n \'A,Bp\'`); never read whole files. Read-only: never edit anything. Your final answer is the structured output only.',
+  SEVERITY_RUBRIC,
+].join('\n')
+
 function trimJson(x, max) {
   let s
   try { s = JSON.stringify(x) } catch (e) { s = String(x) }
@@ -998,6 +1075,11 @@ function modeText(mode, o) {
     const items = [...(o.missing || []).map(f => `- file: ${f}`), ...(o.remaining || []).map(r => `- item: ${r}`)].join('\n')
     const prior = ((o.prev && o.prev.findings) || []).map(f => `- ${f.title}`).join('\n') || '- (none)'
     return `Continuation: an earlier run of this unit did not cover everything. Cover ONLY these:\n${items}\nDo not repeat these earlier findings:\n${prior}\nReport files_read for this run only.`
+  }
+  if (mode === 'gap') {
+    const gaps = (o.gaps || []).map(g => `- ${g.area}: ${g.why}${g.evidence && g.evidence.file ? ` (seen at ${g.evidence.file}:${g.evidence.line})` : ''}`).join('\n')
+    const prior = ((o.prev && o.prev.findings) || []).map(f => `- ${f.title}`).join('\n') || '- (none)'
+    return `Gap re-run: an outcome critic found parts of this unit that the earlier pass did not cover. Cover ONLY these gaps:\n${gaps}\nDo not repeat these findings:\n${prior}\nReport files_read for this run only.`
   }
   if (mode === 'repair') {
     const prev = o.prev ? { summary: o.prev.summary, findings: o.prev.findings, numbers: o.prev.numbers } : {}
@@ -1058,7 +1140,9 @@ const money = {
 const out0 = budget.spent()
 const maxOut = A.caps && Number(A.caps.maxOutputTokens) > 0 ? Number(A.caps.maxOutputTokens) : Math.round(1.5 * M.plannedOut)
 const b2Pending = new Set(V.units.filter(u => u.fbCell && u.v && u.v.B === 2).map(u => u.id))
-const ledger = { units: [], verifiers: [], inspectors: [], sweeps: [], cells: {}, reroutes: 0, promotions: [], rescued: 0 }
+const ledger = { units: [], verifiers: [], inspectors: [], sweeps: [], critics: [], cells: {}, reroutes: 0, gapRuns: 0, promotions: [], rescued: 0 }
+// Gaps a critic named that no gap re-run covered (already re-routed, reserve refused, run failed).
+const uncovered = []
 const unitResults = {}
 let claims = []
 // Union of every unit's scope files, for canonicalizing evidence that isn't tied to one unit
@@ -1206,13 +1290,45 @@ function finishUnit(L, u, outcome, reason, res, c, producer, rescue) {
       title: f.title, claim: f.claim, evidence: scopeEvidence(f.evidence, u.scope.files),
       // A rescued claim always gets a skeptic (floor V2): its unit failed a capability check, so
       // grounded quotes alone are not enough to call it PLAUSIBLE.
-      parity: u.parity, producer: producer || u.cell, bump: L.verifyBump + (saved ? 1 : 0), blast: u.v ? u.v.B : 0, floor: saved ? Math.max(floorOf(u.checks), 2) : floorOf(u.checks),
+      parity: u.parity, producer: producer || u.cell, bump: L.verifyBump + (saved ? 1 : 0) + (f.overstated ? 1 : 0), blast: u.v ? u.v.B : 0, floor: saved ? Math.max(floorOf(u.checks), 2) : floorOf(u.checks),
       verdict: !saved && (outcome === 'unverified' || outcome === 'brief') ? 'UNVERIFIED' : null,
       reason: saved ? `producer unit failed: ${reason || ''}`.trim() : outcome === 'unverified' || outcome === 'brief' ? `unit ${outcome}: ${reason || ''}`.trim() : null,
       rescued: saved ? `producer unit failed: ${reason || ''}`.trim() : null,
+      criticNote: f.overstated || null,
     }) })
   }
   return L
+}
+
+// The outcome critic of one unit (0.1.7): reads the brief, Scope, files_read and findings and
+// names gaps and overstated findings. Paid from the work pool (it is in P); a refused or failed
+// critic is listed in dropped, never treated as "no gaps".
+async function unitCritic(u, res) {
+  const cell = V.unitCriticCell
+  const est = estUsd(cell, u.in * K.verifierInFrac, 0, K, agentOpts('skeptic', K, 'critic'))
+  const tag = `⟦df:k:${u.id}:1⟧`
+  const why = blocked(est, 'work', u)
+  if (why) { ledger.critics.push({ tag, unit: u.id, cell: cellKey(cell), estUsd: 0, skipped: why }); dropped.push({ what: `outcome critic ${u.id}`, count: 1, reason: why }); return null }
+  commit(est, 'work', cell)
+  const findings = (res.findings || []).map((f, i) => {
+    const e = (f.evidence || [])[0] || {}
+    return `f${i + 1} | ${f.severity} | ${f.title} | ${e.file ? `${toScope(e.file, u.scope.files)}:${e.line}` : '(no evidence)'} | ${f.claim}`
+  })
+  const prompt = [
+    A.shared || '', '', `## Outcome critic for unit ${u.id}: ${u.role}`, UNIT_CRITIC_RULES, '', 'Brief:', u.brief, '',
+    'Scope:', ...(u.scope.files.length ? u.scope.files.map(f => `- ${f}`) : ['- (none listed)']), '',
+    `files_read: ${(res.files_read || []).join(', ') || '(none)'}`, '',
+    'Findings (fid | severity | title | file:line | claim):', ...(findings.length ? findings : ['(none)']), '', tag,
+  ].join('\n')
+  const r = await callOnce(prompt, cell, { label: `critic:${u.id}·${cellKey(cell)}`, phase: 'Work', schema: UNIT_CRITIC, agentType: AT.skeptic })
+  const entry = { tag, unit: u.id, cell: cellKey(cell), estUsd: est }
+  ledger.critics.push(entry)
+  if (!r) { entry.skipped = 'critic returned nothing'; dropped.push({ what: `outcome critic ${u.id}`, count: 1, reason: 'critic returned nothing' }); return null }
+  const gaps = (Array.isArray(r.gaps) ? r.gaps : []).filter(g => g && g.area).map(g => ({ area: String(g.area), why: String(g.why || ''), material: !!g.material, evidence: g.evidence || null }))
+  const overstated = (Array.isArray(r.overstated) ? r.overstated : []).filter(x => x && x.fid)
+  const coverage = typeof r.coverage === 'number' ? r.coverage : null
+  Object.assign(entry, { coverage, gaps: gaps.length, material: gaps.filter(g => g.material).length, overstated: overstated.length })
+  return { coverage, gaps, overstated }
 }
 
 async function runUnit(u) {
@@ -1235,7 +1351,7 @@ async function runUnit(u) {
     attempt++
     const tag = `⟦df:${u.id}:${attempt}⟧`
     const est = estUsd(c, u.in, u.ctxTokEff, K, u.o)
-    const pool = k === 'reroute' ? 'reserve' : 'work'
+    const pool = k === 'reroute' || k === 'gap' ? 'reserve' : 'work'
     const why = k === 'promoted' ? blocked(u.estPrimary, 'work', u) : blocked(est, pool, u)
     if (why) { L.attempts.push({ n: attempt, tag, cell: cellKey(c), kind: k, mode: mode || null, cls: 'refused', estUsd: 0 }); return { refused: why } }
     if (k === 'promoted') { money.committed += u.estPrimary; ledger.cells[cellKey(c)] = (ledger.cells[cellKey(c)] || 0) + 1 } else commit(est, pool, c)
@@ -1245,6 +1361,40 @@ async function runUnit(u) {
     })
     L.attempts.push({ n: attempt, tag, cell: cellKey(c), kind: k, mode: mode || null, cls: null, estUsd: round4(est) })
     return { res }
+  }
+
+  // After classify() passes: the outcome critic. An overstated flag bumps that finding one rung
+  // and its note goes to the skeptic. A material gap, or coverage < 0.75 on a recall-critical
+  // unit, spends the unit's ONE re-route as a gap re-run (fb, or p when fb is null) paid from
+  // R; its findings are added. Gaps no re-run covered go to digest.uncovered, never silently.
+  const gate = async (outcome, res, c, producer) => {
+    if (!u.critic) return finishUnit(L, u, outcome, null, res, c, producer)
+    const k = await unitCritic(u, res)
+    if (!k) return finishUnit(L, u, outcome, null, res, c, producer)
+    L.critic = { coverage: k.coverage, gaps: k.gaps.length, overstated: k.overstated.length }
+    for (const x of k.overstated) {
+      const m = /f(\d+)$/.exec(String(x.fid))
+      const f = m && (res.findings || [])[Number(m[1]) - 1]
+      if (f) f.overstated = String(x.why || 'filed too high')
+    }
+    const lowCov = recallCritical(u) && typeof k.coverage === 'number' && k.coverage < 0.75
+    if (!k.gaps.some(g => g.material) && !lowCov) return finishUnit(L, u, outcome, null, res, c, producer)
+    const gaps = k.gaps.length ? k.gaps : [{ area: 'scope coverage', why: `critic coverage ${k.coverage}`, material: false, evidence: null }]
+    L.gapsFound = gaps.length
+    const leave = cause => { for (const g of gaps) uncovered.push({ unit: u.id, area: g.area, why: g.why, cause }) }
+    if (outcome === 'ok-rerouted') { leave('unit already re-routed for capability (one re-route per unit)'); return finishUnit(L, u, outcome, null, res, c, producer) }
+    const gcell = u.fbCell || u.cell
+    const g = await run(gcell, 'gap', 'gap', { gaps, prev: res })
+    if (g.refused) { leave(g.refused); return finishUnit(L, u, outcome, null, res, c, producer) }
+    ledger.gapRuns++
+    const more = g.res
+    L.attempts[L.attempts.length - 1].cls = more ? (more.status === 'blocked' ? 'gap-blocked' : 'gap') : 'gap-failed'
+    if (!more) { leave('gap re-run returned no result'); return finishUnit(L, u, outcome, null, res, c, producer) }
+    if (more.status === 'blocked') { leave(`gap re-run blocked: ${more.blocked_reason || 'no reason given'}`); return finishUnit(L, u, outcome, null, res, c, producer) }
+    log(`${u.id}: gap re-run on ${cellKey(gcell)} for ${gaps.length} gap(s)`)
+    await inspect(u, more, attempt)
+    const merged = mergeResults(res, { ...more, status: res.status })
+    return finishUnit(L, u, outcome, null, merged, c, producer)
   }
 
   let r = await run(cell, kind, null, null)
@@ -1310,10 +1460,10 @@ async function runUnit(u) {
     }
     const c2 = classify(u, fixed, insp2, { capacityUsed: true, tieoutFailed: !!(tie2 && !tie2.ok) })
     if (c2.cls !== 'ok') return finishUnit(L, u, 'unverified', `after fallback: ${(c2.reasons || []).join('; ') || c2.cls}`, fixed, c2, producer, insp2)
-    return finishUnit(L, u, 'ok-rerouted', null, fixed, c2, producer)
+    return gate('ok-rerouted', fixed, c2, producer)
   }
   if (u.n && tie) res.numbersStatus = tie.ok ? 'CONFIRMED' : 'UNVERIFIED'
-  return finishUnit(L, u, kind === 'promoted' ? 'ok-promoted' : 'ok', null, res, c, producer)
+  return gate(kind === 'promoted' ? 'ok-promoted' : 'ok', res, c, producer)
 }
 
 async function sweep() {
@@ -1381,6 +1531,7 @@ async function runBatch(b) {
       `${c.cid} | ${c.severity} | ${c.title}`,
       `  claim: ${c.claim}`,
       `  evidence: ${(c.evidence || []).map(e => `${e.file}:${e.line} "${e.quote}"`).join('; ') || '(none)'}`,
+      ...(c.criticNote ? [`  note: a reviewer thinks this may be overstated because ${c.criticNote}`] : []),
     ].join('\n')).join('\n')
     const prompt = [A.shared || '', '', SKEPTIC_RULES, lenses[i] ? `\n${lenses[i]}` : '', '', 'Claims:', list, '', tag].join('\n')
     const r = await callOnce(prompt, b.cell, { label: `verify:${b.id}·${b.rung}·${cellKey(b.cell)}`, phase: 'Verify', schema: VERDICT, agentType: AT.skeptic })
@@ -1495,6 +1646,8 @@ const digest = {
     brief: count('brief'), unverified: count('unverified'), claims: claims.length, confirmed: vcount('CONFIRMED'),
     plausible: vcount('PLAUSIBLE'), refuted: vcount('REFUTED'), unverifiedClaims: vcount('UNVERIFIED'), pending: vcount('PENDING'),
     rescued: claims.filter(c => c.rescued).length,
+    critics: ledger.critics.filter(k => !k.skipped).length,
+    gapsFound: ledger.units.reduce((t, l) => t + (l.gapsFound || 0), 0), gapReruns: ledger.gapRuns, uncovered: uncovered.length,
     bySeverity: Object.fromEntries(SEVERITIES.map(s => [s, claims.filter(c => effSev(c) === s).length])),
   },
   waiver: V.waiver || null,
@@ -1511,7 +1664,7 @@ const digest = {
     committedUsd: round2(money.committed + money.verifySpent), rerouteUsd: round2(money.rerouteUsd), verifyUsd: round2(money.verifySpent), outputTokens: budget.spent() - out0,
     note: 'estimates from the price model; run scripts/ledger-cost.mjs for actuals. outputTokens counts output only',
   },
-  warnings, dropped, invariants, critic: critique,
+  warnings, dropped, invariants, critic: critique, uncovered,
 }
 log(`done: ${digest.counts.ok + digest.counts.okRerouted + digest.counts.okPromoted}/${digest.counts.units} units ok, ${ledger.reroutes} re-route(s), ${digest.counts.claims} claim(s): ${digest.counts.confirmed} confirmed / ${digest.counts.refuted} refuted / ${digest.counts.unverifiedClaims} unverified; committed $${digest.money.committedUsd} + reserve used $${digest.money.rerouteUsd}`)
 return {
@@ -1525,7 +1678,7 @@ return {
       cid: c.cid, unit: c.unit, severity: c.severity, verifiedSeverity: c.verifiedSeverity || null, title: c.title, claim: c.claim,
       evidence: c.evidence, rung: c.rung || null, verdict: c.verdict, verdictBy: c.verdictBy || null, reason: c.reason || null,
       counter_quote: c.counter_quote || null, support: c.support || null, support_cmd: c.support_cmd || null, parity: !!c.parity, producer: c.producer || null, bump: c.bump || 0,
-      blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, rescued: c.rescued || null, mergedFrom: c.mergedFrom || null, merged: c.merged || null,
+      blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, rescued: c.rescued || null, criticNote: c.criticNote || null, mergedFrom: c.mergedFrom || null, merged: c.merged || null,
     })),
   },
 }
