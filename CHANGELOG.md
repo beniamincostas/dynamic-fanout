@@ -50,6 +50,17 @@ uncapped (245-387 turns, 450-890k context) outside this quality loop.
   implies: recall-critical units run on W at high or xhigh, never on sonnet, with lenses for
   parity and B2 review.
 
+### Review follow-ups
+The build's whole-diff review said NEEDS CHANGES. Two fixes, with tests:
+- **The guard hook checks name-only calls too.** A saved workflow called by name is read from
+  the project's or the user's `.claude/workflows/` and guarded like an inline script. A name
+  the guard cannot read (another plugin's or a built-in workflow) passes with a note saying it
+  went unchecked, never silently.
+- **A gap re-run's findings are grounded like any finding.** Its inspection now decides which
+  findings are added: a finding whose quotes were all checked and none resolved is not added,
+  and appears in `digest.uncovered` as an unresolved gap finding. The original result's
+  `remaining` items survive the merge.
+
 ## dynamic-fanout 0.1.6 — 2026-10-21
 
 From one production run: a UX and automation review of a report workbook (3 units, 63 claims,

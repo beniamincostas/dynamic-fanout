@@ -7,8 +7,9 @@
 // workflow('dynamic-fanout:...'), or when it carries `// dynamic-fanout: exempt <reason>`
 // (reason of 10+ characters; the exemption is named back to the model). Anything else is
 // denied with a reason that points to the skill. Any error fails open: exit 0, no output.
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readFileSync, existsSync } from 'node:fs'
+import { resolve, join } from 'node:path'
+import { homedir } from 'node:os'
 
 const DENY_REASON = [
   'This Workflow script bypasses the dynamic-fanout quality loop: its agents run uncapped on the session model and effort, their outcomes go unchecked, and there is no escalation when a result is not good enough.',
@@ -19,12 +20,33 @@ const DENY_REASON = [
 const CALLS_PLUGIN = /\bworkflow\(\s*(['"])dynamic-fanout:[^'"]+\1/
 const EXEMPT = /^\s*\/\/\s*dynamic-fanout:\s*exempt\s+(\S.{8,}\S)\s*$/m
 
+// A saved hand-written workflow is called by name: look for its file in the project's and the
+// user's .claude/workflows/ and guard it like an inline script. A name that resolves to no file
+// there (another plugin's or a built-in workflow) cannot be inspected: let it through, but say so.
+function savedWorkflow(name, cwd) {
+  if (!/^[\w.-]+$/.test(name)) return null
+  for (const dir of [join(cwd, '.claude', 'workflows'), join(homedir(), '.claude', 'workflows')]) {
+    for (const ext of ['.js', '.mjs']) {
+      const p = join(dir, name + ext)
+      if (existsSync(p)) return readFileSync(p, 'utf8')
+    }
+  }
+  return null
+}
+
 function decide(input) {
   const ti = (input && input.tool_input) || {}
+  const cwd = typeof input.cwd === 'string' ? input.cwd : process.cwd()
   if (typeof ti.name === 'string' && ti.name.startsWith('dynamic-fanout:')) return null
   let script = typeof ti.script === 'string' ? ti.script : null
   if (script === null && typeof ti.scriptPath === 'string' && ti.scriptPath) {
-    script = readFileSync(resolve(typeof input.cwd === 'string' ? input.cwd : process.cwd(), ti.scriptPath), 'utf8')
+    script = readFileSync(resolve(cwd, ti.scriptPath), 'utf8')
+  }
+  if (script === null && typeof ti.name === 'string' && ti.name) {
+    script = savedWorkflow(ti.name, cwd)
+    if (script === null) {
+      return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `dynamic-fanout guard: the named workflow '${ti.name}' is not a saved script this guard can read (another plugin's or a built-in workflow), so it was let through unchecked; its agents are not routed, checked or escalated by dynamic-fanout.` } }
+    }
   }
   if (script === null) return null
   if (CALLS_PLUGIN.test(script)) return null

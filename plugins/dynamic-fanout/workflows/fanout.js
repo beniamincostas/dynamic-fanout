@@ -1300,6 +1300,7 @@ async function inspect(u, res, n) {
   return {
     total: batch.length, resolved, rate: resolved / batch.length,
     resolvedFiles: [...new Set(hits.map(b => b.file))], resolvedKeys: hits.map(b => `${b.file}|${b.quote}`),
+    checkedKeys: batch.map(b => `${b.file}|${b.quote}`),
   }
 }
 
@@ -1445,8 +1446,23 @@ async function runUnit(u) {
     if (!more) { leave('gap re-run returned no result'); return finishUnit(L, u, outcome, null, res, c, producer) }
     if (more.status === 'blocked') { leave(`gap re-run blocked: ${more.blocked_reason || 'no reason given'}`); return finishUnit(L, u, outcome, null, res, c, producer) }
     log(`${u.id}: gap re-run on ${cellKey(gcell)} for ${gaps.length} gap(s)`)
-    await inspect(u, more, attempt)
-    const merged = mergeResults(res, { ...more, status: res.status })
+    // Ground the gap findings like any finding: with an inspection, a gap finding whose quotes
+    // did not resolve is not added; it is listed as uncovered with that cause, never silently.
+    const gi = await inspect(u, more, attempt)
+    // Only a finding whose quotes were all checked and none resolved is dropped; quotes beyond
+    // the inspector's batch stay for check-evidence.mjs at close.
+    if (gi && Array.isArray(gi.resolvedKeys) && Array.isArray(gi.checkedKeys)) {
+      const ok = new Set(gi.resolvedKeys), seen = new Set(gi.checkedKeys)
+      const kept = []
+      for (const f of more.findings || []) {
+        const keys = (f.evidence || []).filter(Boolean).map(e => `${toScope(e.file, u.scope.files)}|${e.quote}`)
+        if (keys.length && keys.every(k => seen.has(k)) && !keys.some(k => ok.has(k))) {
+          uncovered.push({ unit: u.id, area: f.title, why: 'gap finding with an unresolved quote', cause: 'not grounded' })
+        } else kept.push(f)
+      }
+      more.findings = kept
+    }
+    const merged = mergeResults(res, { ...more, status: res.status, remaining: [...(res.remaining || []), ...(more.remaining || [])] })
     return finishUnit(L, u, outcome, null, merged, c, producer)
   }
 

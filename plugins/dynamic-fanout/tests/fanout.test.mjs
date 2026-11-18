@@ -1276,6 +1276,20 @@ test('0.1.7: critics and expected gap re-runs are priced; the card carries a cri
   assert.equal(r1.card.units[0].critic, true)
 })
 
+test('0.1.7: a gap re-run is inspected; a gap finding whose quote does not resolve is not added and is listed as uncovered', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 3, 'medium', 'first issue')] }),
+    'k:u1:1': gapCritic(),
+    'u1:2': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 40, 'medium', 'grounded gap'), { ...finding('src/u1.py', 60, 'medium', 'ungrounded gap'), evidence: [{ file: 'src/u1.py', line: 60, quote: 'nope' }] }] }),
+    'i:u1:2': { checks: [{ ref: 'f0.e0', found: true }, { ref: 'f1.e0', found: false }] },
+  }))
+  assert.ok(calls.find(c => tagOf(c.prompt) === 'i:u1:2'), 'the gap run was inspected')
+  const titles = res.results.claims.filter(c => c.unit === 'u1').map(c => c.title).sort()
+  assert.deepEqual(titles, ['first issue', 'grounded gap'])
+  assert.ok(res.digest.uncovered.some(x => x.area === 'ungrounded gap' && /unresolved quote/.test(x.why)))
+})
+
 test('0.1.7: a material gap re-runs the unit once on fb, gaps only; findings are added', async () => {
   const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
   const { res, calls } = await runFanout(a, responder({
