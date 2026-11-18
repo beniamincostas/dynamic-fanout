@@ -341,14 +341,17 @@ then a unique suffix match), so a worker citing `fanout.js` for the scoped
 { started: true, card,
   digest: {
     counts: { units, ok, okRerouted, okPromoted, brief, unverified, claims,
-              confirmed, plausible, refuted, unverifiedClaims, pending },
+              confirmed, plausible, overstated, refuted, unverifiedClaims, pending, rescued,
+              critics, gapsFound, gapReruns, uncovered, notes, corrections, bySeverity },
     exceptions: [{ id, cls, reason, cell, why }],     // every non-ok unit
     top: [{ cid, unit, severity, title, verdict, file, line, support }],   // support = 'file:line' or support_cmd
     money: { U, P, R, C, parityBound, committedUsd, rerouteUsd, verifyUsd, outputTokens, note },
     //  committedUsd includes verification spend; verifyUsd = the part drawn by verifiers
     warnings: [], dropped: [{ what, count, reason }],
     invariants: [{ name, ok, lhs, rhs, diffCents }],
-    critic: [ /* deep only: what is missing */ ] },
+    critic: [ /* deep only: what is missing */ ],
+    uncovered: [{ unit, area, why, cause }],   // critic gaps no gap re-run covered
+    notes: [{ unit, area, why, file, line }] },  // non-material critic gaps that point at no finding
   ledger: {
     units: [{ id, role, vec, parity, p, fb, ctx, check, why, override, outcome, reason,
               verifyBump, attempts: [{ n, tag, cell, kind, mode, cls, estUsd }] }],
@@ -361,7 +364,9 @@ then a unique suffix match), so a worker citing `fanout.js` for the scoped
                    result, assumptions, confidence, uncovered } },
     claims: [{ cid, unit, severity, verifiedSeverity, title, claim, evidence, rung,
                verdict, verdictBy, reason, counter_quote, support, support_cmd, parity,
-               producer, bump, blast, floor, mergedFrom }] } }
+               producer, bump, blast, floor, mergedFrom,
+               criticNote,          // the critic thinks it is overstated (bumped one rung)
+               criticCorrection }] } }  // a non-material critic gap at this finding, shown to its skeptic
 ```
 Read a result with `node scripts/report.mjs <output.json|audited.json>` (header, one row
 per unit with role, cell and outcome, claims sorted by severity with their support;
