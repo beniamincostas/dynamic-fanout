@@ -904,19 +904,19 @@ test('blocker/high claims are exempt from topK; topK bounds only the remaining V
 test('price: expected verifier batches follow the expected findings', () => {
   const K = core.calibrate()
   const R = core.DEFAULT_RUNGS
-  // 8 units, standard (batch 3, topK 12): ceil(8·0.9/3) = 3 batches for highs, mediums at the
-  // V2 default: + ceil(min(8·5, 12)/3) = 4
-  assert.equal(core.expectedVerifiers(8, 'standard', {}, R, K), 7)
-  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V2' }, K), 7)
+  // 8 units, standard (batch 3, topK 12): highs sit at V3, whose batches hold at most 2
+  // (0.1.7): ceil(8·0.9/2) = 4, mediums at the V2 default: + ceil(min(8·5, 12)/3) = 4
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, R, K), 8)
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V2' }, K), 8)
   // a medium pinned to V1 reserves none
-  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V1' }, K), 3)
-  // explicit batch and topK
-  assert.equal(core.expectedVerifiers(8, 'standard', { batch: 5, topK: 8 }, { ...R, medium: 'V3' }, K), 2 + 2)
-  // quick depth: batch 5, topK 6
-  assert.equal(core.expectedVerifiers(4, 'quick', {}, { ...R, medium: 'V2' }, K), 1 + 2)
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V1' }, K), 4)
+  // explicit batch and topK; V3 mediums also batch by 2
+  assert.equal(core.expectedVerifiers(8, 'standard', { batch: 5, topK: 8 }, { ...R, medium: 'V3' }, K), 4 + 4)
+  // quick depth: batch 5 (2 at V3), topK 6
+  assert.equal(core.expectedVerifiers(4, 'quick', {}, { ...R, medium: 'V2' }, K), 2 + 2)
   // price() uses it when verify.expected is absent, and honours an explicit one
   const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V1' } } })
-  assert.equal(core.price(a, core.validate(a), K).expected, Math.ceil(2 * 0.9 / 3))
+  assert.equal(core.price(a, core.validate(a), K).expected, Math.ceil(2 * 0.9 / 2))
   const b = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' } } })
   assert.equal(core.price(b, core.validate(b), K).expected, 1 + Math.ceil(Math.min(2 * 5, 12) / 3))
   const c = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, expected: 5 } })
@@ -1447,4 +1447,75 @@ test('0.1.7: an OVERSTATED claim counts as real, not refuted; verifiedSeverity c
   assert.equal(res.digest.counts.overstated, 1)
   assert.equal(res.digest.counts.refuted, 0)
   assert.equal(res.digest.counts.confirmed, 1)
+})
+
+// ───────────────────────── 0.1.7 verification capacity ─────────────────────────
+
+test('0.1.7: skeptic turn cap is 20 in the calibration card', () => {
+  assert.equal(core.calibrate().caps.skeptic, 20)
+})
+
+test('0.1.7: V3/V4 verifier batches hold at most 2 claims; V2 keeps the configured batch', async () => {
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' }, batch: 5 } })
+  const { calls } = await runFanout(a, responder({
+    'u2:1': okUnit({ files_read: ['src/b.py'], findings: [
+      ...[10, 20, 30, 40, 50].map((l, i) => finding('src/b.py', l, 'high', `h${i}`)),
+      ...[60, 70, 80].map((l, i) => finding('src/b.py', l, 'medium', `m${i}`)),
+    ] }),
+  }))
+  const v = calls.filter(c => tagOf(c.prompt).startsWith('v:'))
+  const sizes = v.map(c => (c.prompt.match(/^c\S* \| (high|medium) \|/gm) || []).length)
+  const highs = v.filter(c => /\| high \|/.test(c.prompt))
+  assert.equal(highs.length, 3, '5 V3 claims → 3 batches of at most 2')
+  for (const c of highs) assert.ok((c.prompt.match(/\| high \|/g) || []).length <= 2)
+  const meds = v.filter(c => /\| medium \|/.test(c.prompt))
+  assert.equal(meds.length, 1, 'V2 claims keep batch 5')
+  assert.ok(sizes.length === v.length)
+})
+
+test('0.1.7: a verifier batch that returns null retries once on the same cell', async () => {
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } } } })
+  const fs = { 'u2:1': okUnit({ files_read: ['src/b.py'], findings: [finding('src/b.py', 10, 'high', 'h1')] }) }
+  let seen = 0
+  let r = await runFanout(a, responder({ ...fs, 'v:b1:1': p => (++seen === 1 ? null : verdictAll(p, 'CONFIRMED')) }), { sequential: true })
+  let v = r.calls.filter(c => tagOf(c.prompt) === 'v:b1:1')
+  assert.equal(v.length, 2)
+  assert.equal(cellOfCall(v[0].opts), cellOfCall(v[1].opts))
+  assert.equal(r.res.results.claims.find(c => c.title === 'h1').verdict, 'CONFIRMED')
+  assert.equal(r.res.ledger.verifierRetries, 1)
+  // twice null → UNVERIFIED with the infra reason; never a third call
+  r = await runFanout(a, responder({ ...fs, 'v:b1:1': null }), { sequential: true })
+  v = r.calls.filter(c => tagOf(c.prompt) === 'v:b1:1')
+  assert.equal(v.length, 2)
+  const h1 = r.res.results.claims.find(c => c.title === 'h1')
+  assert.equal(h1.verdict, 'UNVERIFIED')
+  assert.equal(h1.reason, 'verifier failed twice (infra)')
+  assert.equal(r.res.ledger.verifierRetries, 1)
+  // a healthy run retries nothing
+  r = await runFanout(a, responder(fs))
+  assert.equal(r.res.ledger.verifierRetries, 0)
+})
+
+test('0.1.7: default topK grows with the V2+ claims; quality max has no topK', async () => {
+  const meds = Array.from({ length: 30 }, (_, i) => finding('src/b.py', 10 + i * 40, 'medium', `m${i}`))
+  const fs = { 'u2:1': okUnit({ files_read: ['src/b.py'], findings: meds }) }
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' } }, caps: { pauseUsd: 1000 } })
+  let { res } = await runFanout(a, responder(fs))
+  // max(12, ceil(0.5 · 30)) = 15
+  assert.equal(res.results.claims.filter(c => c.verdictBy === 'topK').length, 15)
+  assert.equal(res.results.claims.find(c => c.verdictBy === 'topK').reason, 'beyond topK 15')
+  // an explicit topK still wins
+  ;({ res } = await runFanout(baseArgs({ verify: { ...a.verify, topK: 4 }, caps: a.caps }), responder(fs)))
+  assert.equal(res.results.claims.filter(c => c.verdictBy === 'topK').length, 26)
+  ;({ res } = await runFanout(baseArgs({ verify: a.verify, caps: a.caps, quality: 'max' }), responder(fs)))
+  assert.equal(res.results.claims.filter(c => c.verdictBy === 'topK').length, 0)
+  // pure rule
+  assert.equal(core.verifySizing({}, 'standard', 30).topK, 15)
+  assert.equal(core.verifySizing({}, 'standard', 4).topK, 12)
+  assert.equal(core.verifySizing({}, 'standard', 4, 'max').topK, Infinity)
+  assert.equal(core.verifySizing({ topK: 3 }, 'standard', 30, 'max').topK, 3)
+})
+
+test('0.1.7: rules tell units never to cite a scratchpad or temp copy', () => {
+  assert.match(core.RULES, /never cite a scratchpad or temp copy/)
 })

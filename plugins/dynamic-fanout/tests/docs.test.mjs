@@ -151,3 +151,33 @@ test('0.1.7: schemas.md states SEVERITY_MATRIX and the OVERSTATED verdict as the
   assert.match(skeptic, /^\| OVERSTATED \| /m);
   assert.match(SKILL, /OVERSTATED/);
 });
+
+test('0.1.7: the skeptic turn cap agrees across fanout.js, the agent files and the docs', () => {
+  const cap = FANOUT.match(/caps: \{[^}]*skeptic: (\d+)/)[1];
+  assert.equal(cap, '20');
+  for (const f of ['skeptic.md', 'skeptic-high.md']) {
+    assert.match(read(PLUGIN, 'agents', f), new RegExp('^maxTurns: ' + cap + '$', 'm'), f);
+  }
+  assert.match(SKILL, new RegExp('skeptic ' + cap + ', inspector'));
+  const routing = read(REFS, 'routing.md');
+  assert.match(routing, new RegExp('\\| `skeptic` \\| verifiers \\| ' + cap + ' \\|'));
+  assert.match(routing, new RegExp('skeptic call \\(' + cap + ' turns'));
+});
+
+test('0.1.7: docs state the verification-capacity defaults', () => {
+  const strong = FANOUT.match(/const MAX_STRONG_BATCH = (\d+)/)[1];
+  const routing = read(REFS, 'routing.md');
+  for (const t of [SKILL, routing]) {
+    assert.match(t, /max\(DEFAULT_TOPK\[depth\], ceil\(0\.5 ×/);
+    assert.match(t, new RegExp('V3/V4 batches hold at most ' + strong + ' claims'));
+  }
+  assert.match(routing, /verifier failed twice \(infra\)/);
+  assert.match(FANOUT, /'verifier failed twice \(infra\)'/);
+});
+
+test('0.1.7: worker and implementer bodies forbid citing scratchpad copies', () => {
+  const dir = path.join(PLUGIN, 'agents');
+  for (const f of fs.readdirSync(dir).filter(f => /^(worker|implementer)/.test(f))) {
+    assert.match(read(dir, f), /never cite a scratchpad or temp copy/, f);
+  }
+});

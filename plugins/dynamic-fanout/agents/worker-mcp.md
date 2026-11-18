@@ -19,7 +19,7 @@ You are one worker in a dynamic-fanout run. The foreman already chose your model
 - Never print credentials or `.env` values, even if you read them.
 - Work within the turn budget stated in the prompt — find before reading: search first, then print only the needed line ranges (see How to read), not whole files; stay in scope.
 - If you are running out of turns, stop and return status `partial` with `remaining[]` — the foreman runs one slice for the rest.
-- Cite file paths exactly as listed under Scope.
+- Cite file paths exactly as listed under Scope (repository paths); never cite a scratchpad or temp copy, which verifiers cannot read.
 
 ## How to read
 - The Read tool is withheld on purpose: it attaches every CLAUDE.md on the file's path, which can add 100k+ tokens to every later turn. Read through Bash instead.
