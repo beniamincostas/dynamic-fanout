@@ -1,5 +1,131 @@
 # Changelog
 
+## dynamic-fanout 0.1.7 — 2026-11-18
+
+The orchestrator's job is a correct, complete result per task: choose each task's model and
+effort, check the outcome, and when it is not good enough re-run that task once on a stronger,
+pre-chosen setup. 0.1.5 checked outcomes only mechanically (quotes exist, files read, not
+blocked), so a capability re-route fired 0-1 times per run while misses, overstatement and
+inflated severity went unseen.
+
+**Measured basis.** A blind quality audit of the 0.1.5 runs: reference judges on ultracode's
+own cell re-judged 42 findings with the code pinned to the reviewed commit; two blind
+reviewers per scope measured recall, and an adjudicator compared. Precision was good: 2 of 38
+non-refuted findings were false, both from medium-effort units (opus·medium, sonnet·medium);
+opus at high or xhigh had 0 of 23 false. 3 of the 4 REFUTED findings were real but
+overstated. 60% of findings were filed too high (often by two levels), and skeptic re-ratings
+stayed too high in 15 of 24. Recall: a two-lens opus·xhigh unit found 33% of the real issues
+in its scope, a plain opus·medium unit 11% (missing 7 medium issues); different passes find
+different issues. From seven production runs: 35% of skeptics hit their 12-turn cap, a
+network outage killed every verifier batch of one run, topK cut 12-46 claims per run,
+verifiers failed on evidence citing another session's scratchpad copy, the implement
+workflow's single whole-diff reviewer once returned no text while three focused lenses found
+15 defects, and most workflow spend went into hand-written workflows whose agents ran
+uncapped (245-387 turns, 450-890k context) outside this quality loop.
+
+- **Outcome critic and gap re-route:** a recall-critical review/research unit (V0 or B≥1),
+  any unit with `critic` in its check, and every unit under `quality: 'max'` gets a lean
+  critic (default W·medium, role `critic`, prior 0.5). A material gap, or coverage < 0.75
+  on a recall-critical unit, spends the unit's one re-route as a gap re-run (`caps.gapRate`
+  0.3); uncovered gaps go to `digest.uncovered`. No-churn holds: one re-route per unit,
+  capability or gap.
+- **OVERSTATED** verdict (counted as real) and **calibrated severity**: producers and
+  skeptics name a trigger and an impact; `SEVERITY_MATRIX` derives the severity.
+- **Verification capacity:** skeptic cap 20, V3/V4 batches of at most 2, a verifier that
+  returns nothing retries once, adaptive topK `max(DEFAULT_TOPK, ceil(0.5 × V2+ claims))`,
+  and rules forbid citing a scratchpad or temp copy.
+- **Routing learns quality:** `stats.mjs` records refuted, overstated, gaps and coverage per
+  cohort; `--summary` prints a QUALITY table and `PROMOTE QUALITY`; `--also` and repeated
+  `--ledger` merge a deep run's two stages.
+- **Implement review** runs as three parallel lenses (boundaries and time, inputs and data,
+  privacy and test integrity) with one bounded repair round.
+- **Quality profile** `quality: 'max'` (`--quality max`): B≥1 review cards default to
+  `lenses: 2`, `rungs.medium` V3, no topK, a critic on every unit, verifier batch 2, and
+  ceilingMult 0.9 unless the user set a ceiling; the card shows `quality: max`.
+- **Guard hook** (`hooks/hooks.json`, `hooks/guard-workflow.mjs`): PreToolUse on the
+  Workflow tool denies a script that does not go through dynamic-fanout, unless it carries
+  `// dynamic-fanout: exempt <reason>` (10+ characters), which is allowed and named back to
+  the model. It fails open on any error.
+- **Docs:** SKILL.md states the orchestrator's job, the audit evidence and the routing it
+  implies: recall-critical units run on W at high or xhigh, never on sonnet, with lenses for
+  parity and B2 review.
+
+### Review follow-ups
+The build's whole-diff review said NEEDS CHANGES. Two fixes, with tests:
+- **The guard hook checks name-only calls too.** A saved workflow called by name is read from
+  the project's or the user's `.claude/workflows/` and guarded like an inline script. A name
+  the guard cannot read (another plugin's or a built-in workflow) passes with a note saying it
+  went unchecked, never silently.
+- **A gap re-run's findings are grounded like any finding.** Its inspection now decides which
+  findings are added: a finding whose quotes were all checked and none resolved is not added,
+  and appears in `digest.uncovered` as an unresolved gap finding. The original result's
+  `remaining` items survive the merge.
+
+### Smoke-test follow-up
+The end-to-end smoke run (two review units over a module with four planted bugs and one
+decoy) found all four, refuted none and left the decoy alone. Its critics named five gaps,
+all non-material, and the run threw every one away. Two of them corrected a finding's stated
+failure value, and one showed that a sign bug reached further than reported. Now, with tests:
+- **Non-material critic gaps are kept.** One whose evidence points at a finding (same file,
+  within 3 lines) reaches that finding's skeptic as `criticCorrection`, with a request to state
+  the corrected input or value. The rest are listed in `digest.notes`. `counts.notes` and
+  `counts.corrections` count them, and step 6 of the skill says what to do with `uncovered`
+  and `notes`.
+- **A merged duplicate keeps its critic notes.** Before this change, dedup dropped the second
+  claim's `criticNote`. It is now joined into the kept claim's note, so the group's one skeptic
+  sees both.
+- The RESULT docs now list `digest.uncovered`, `digest.notes`, the 0.1.7 counts, and
+  `criticNote`/`criticCorrection` on claims.
+- **OVERSTATED now means "filed too high".** A second smoke run (with the gap re-run, two
+  OVERSTATED verdicts, $1.59 committed against $3.83 for ultracode) showed that the critic had
+  sent "the example value is wrong" through its *overstated* channel. Both skeptics then said
+  OVERSTATED but kept the filed trigger and impact, so a blocker stayed a blocker, labelled
+  overstated. Routing's quality learning (`PROMOTE QUALITY`, refuted + overstated) would have
+  read that as severity inflation. Now:
+  - an OVERSTATED verdict whose corrected pair does not rate the claim lower becomes
+    CONFIRMED, with reason "confirmed at its filed severity; details corrected: …";
+  - the critic sends a wrong example value as a non-material gap at the finding, so it takes
+    the correction path above;
+  - the skeptic rules say that a wrong example value or title at the same severity is
+    CONFIRMED.
+
+### Lens review of the follow-ups
+The follow-up commits were reviewed through the skill's solo path: the master's own pass plus
+two opus lens agents (A: boundaries and time; B: inputs and data). A headless probe settled one
+open question: a saved workflow is registered under its `meta.name`, not its file name. Every
+item was spot-checked in the code before it was fixed. Fixes, with tests:
+- **Guard hook.**
+  - It checks inputs in the tool's order (`scriptPath`, then `script`, then `name`). Before,
+    a plugin name or plugin-calling inline script next to a plain `scriptPath` was allowed
+    while the plain file ran.
+  - It finds a saved workflow by `meta.name`, in the project root (`CLAUDE_PROJECT_DIR`) as
+    well as the current directory. Before, a file whose name differed from its `meta.name`
+    passed unchecked.
+  - A commented-out `workflow('dynamic-fanout:…')` no longer counts as routed: whole-line and
+    trailing `//` comments, and `/* */` blocks that start a line, are ignored for that test.
+  - The `meta.name` is read by a small scanner of meta's top-level keys, so a `name:` in a
+    string, a nested object or code after meta never counts. An empty `script` next to a plugin
+    name counts as no script.
+  - A call written with a template literal is recognised.
+- **OVERSTATED rule.** A V4 panel that splits CONFIRMED vs a lower OVERSTATED stays OVERSTATED.
+  Before, the panel's highest rating turned it into CONFIRMED and hid the inflation signal. An
+  OVERSTATED rated above filed now says so in its reason.
+- **Critic corrections.**
+  - A correction goes to the nearest finding.
+  - It is kept out of a gap re-run.
+  - If no skeptic judges its claim (V0/V1, topK, failed verifier), it is listed in
+    `digest.notes` with the claim id.
+  - `report.mjs` prints it under the claim.
+  - Dedup joins note parts without repeating one.
+  - The critic is told not to list areas it checked and found fine as gaps.
+- **Relocated quotes.** A quote the inspector finds at another line is relocated (evidence line
+  corrected). A gap finding citing it is kept instead of dropped. Before, gap findings were held
+  to a stricter standard than primary ones.
+- Stale OVERSTATED comments in `fanout.js` and `check-evidence.mjs` are updated.
+
+Not changed: a plugin call quoted inside a prompt string still counts as routed (rare; the
+hook does not parse JavaScript).
+
 ## dynamic-fanout 0.1.6 — 2026-10-21
 
 From one production run: a UX and automation review of a report workbook (3 units, 63 claims,

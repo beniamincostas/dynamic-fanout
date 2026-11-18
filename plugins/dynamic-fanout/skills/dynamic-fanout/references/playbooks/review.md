@@ -63,14 +63,19 @@ it never overrides the rails in `workflow.md`.
   (measured recall ~60% for opus·xhigh, ~41% for sonnet·medium). Give parity and B2 review
   units `lenses: 2` (two copies: inputs and data, time and ordering; dedup merges them),
   because two differently-focused reviewers overlap little.
+- **Recall-critical review units** (0.1.7 audit: all false findings came from medium-effort
+  units; recall 11% for a plain opus·medium unit vs 33% for a two-lens opus·xhigh one) run on
+  W at high or xhigh, never on sonnet. They get an outcome critic: a material gap spends the
+  unit's one re-route as a gap re-run, and an overstated finding is verified one rung higher.
+- When quality matters most, set `quality: 'max'`: B≥1 review cards default to `lenses: 2`,
+  mediums go to V3, no topK, a critic on every unit, verifier batch 2, ceiling 0.9·U.
 - The ≤15 cap exists because a unit stopped at the old cap of 8 missed 6 real issues.
-- **Severity rubric** (producers and skeptics, `SEVERITY_RUBRIC` in fanout.js): blocker =
-  wrong customer-facing money or legal action, or data loss, in normal operation; high = a
-  wrong outcome is likely in realistic cases; medium = edge cases or a real operational
-  risk; low = minor; info = an observation. Rate by what the code does today:
-  most findings are medium or low (a blind audit found 61% filed too high, often by two
-  levels). The
-  skeptic states its own `verifiedSeverity`; `report.mjs` shows `filed->verified`.
+- **Calibrated severity** (0.1.7, producers and skeptics, `SEVERITY_MATRIX` in fanout.js):
+  each finding names a `trigger` (normal | edge | misconfig | theoretical) and an `impact`
+  (customer_money_legal | wrong_outcome | operational | cosmetic); the foreman derives
+  severity from the pair (a free label stayed too high in 60% of findings). The skeptic
+  returns its own pair (`verifiedSeverity`); a real but overstated claim is OVERSTATED, not
+  REFUTED. `report.mjs` shows `filed->verified`.
 - "Deployed code" alone is B1, not B2: B2 means booked numbers, money movement or a
   deploy break that is invisible until production.
 - Everything cheaper than parity must name the check that catches its failure (`tests`,

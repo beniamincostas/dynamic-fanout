@@ -103,6 +103,15 @@ Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs 
    (`<id>A` inputs and data, `<id>B` time and ordering), each priced, inspected and
    re-routed on its own, and dedup merges what both report. Two differently-focused
    reviewers overlap little (26 issues merged into 17). Not with `n:1`.
+   **Recall-critical units (0.1.7 audit):** every false finding came from a medium-effort
+   unit (opus·medium, sonnet·medium; opus high/xhigh had 0 of 23 false), and recall was 11%
+   for a plain opus·medium unit vs 33% for a two-lens opus·xhigh unit. A review/research unit
+   that is V0 or B≥1 therefore runs on W at high or xhigh, never on sonnet, with `lenses: 2`
+   for parity and B2 review. Such a unit also gets an **outcome critic** (critic role, default
+   W·medium): a material gap, or coverage < 0.75, spends its one re-route as a gap re-run.
+   **Quality profile** (`quality: 'max'`): review cards with B≥1 default to `lenses: 2`,
+   `rungs.medium` V3, no topK, a critic on every unit, verifier batch 2, ceilingMult 0.9
+   unless the user set a ceiling. Explicit card and `verify` values win.
    Every other unit is cheaper only because it is easy, or because a named objective check
    catches its failure. `check:none` outside parity is a planning error.
 5. **Unsure → W·medium plus an objective check.** Never guess low; a cheap miss costs a
@@ -120,7 +129,7 @@ Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs 
      unverified (re-route refused, `fb` null or failed), its claims with a resolved quote
      are **rescued** to verification one rung higher; only ungrounded claims stay UNVERIFIED.
 6a. **Whole-diff reviews use the reviewer agent, not the skeptic.** A single claim's
-   verification is a skeptic call (12 turns, built for one claim's evidence); a whole-PR
+   verification is a skeptic call (20 turns, built for one claim's evidence); a whole-PR
    review over a run's commits is `dynamic-fanout:implement`'s own `dynamic-fanout:reviewer`
    (30 turns) — see `playbooks/implement.md`.
 7. **Verifiers** (declare `verify.rungs` per severity and `verify.cells`):
@@ -133,6 +142,11 @@ Only pay for the full tool set (`worker-mcp`, `worker-ctx`) when the unit needs 
      states why; the waiver is echoed in the card and digest;
    - the parity floor (V3) applies to parity claims of **medium and above** only; low/info
      parity claims keep their rung, so `topK` does not cut mediums for them;
+   - **capacity (0.1.7):** without `verify.topK` the default is
+     `max(DEFAULT_TOPK[depth], ceil(0.5 × claims eligible for V2+))`; `quality: 'max'` has no
+     topK (the money rails still gate every launch). V3/V4 batches hold at most 2 claims; a
+     batch whose verifier returns nothing retries once on the same cell, then its claims are
+     UNVERIFIED with reason `verifier failed twice (infra)` (`ledger.verifierRetries`);
    - **findings and severity:** a unit returns ≤15 findings (one stopped at the old cap of 8
      missed 6 real issues). Producers and skeptics share one rubric — blocker = wrong
      customer-facing money or legal action, or data loss, in normal operation; high = a wrong
@@ -236,7 +250,7 @@ with planned turns = min(cap, round((10 + in/2500) × effort factor)) and the pr
 | `worker-mcp` (workerMcp) | vector T2, `ctx:omit` | 35 | 15k |
 | `worker-ctx` (workerCtx) | `ctx:keep` | 30 | 15k + `ctxTok` |
 | `implementer` | role `implement` | 60 | 15k + `ctxTok` |
-| `skeptic` | verifiers | 12 | lean 8k |
+| `skeptic` | verifiers | 20 | lean 8k |
 | `inspector` | quote checks, B2 units | 6 | lean 8k |
 
 Implementers price on their own role, `implement` (prior 2.0: they keep CLAUDE.md, run test

@@ -112,6 +112,12 @@ copies, `<id>A` and `<id>B`, each with one lens line appended to its brief (A: i
 data; B: time and ordering). Each copy is a full unit — priced, inspected, classified and
 re-routed on its own, with `lens`/`lensOf` on its card row. Rails errors: `lenses` other
 than 1 or 2, `lenses: 2` on another kind, or combined with `n: 1`.
+`quality` (since 0.1.7): `'standard'` (default) or `'max'`; anything else is a rails error.
+`quality: 'max'` is the quality profile: a review card with B≥1 and no `lenses` becomes
+`lenses: 2` (unless `n: 1` or allow-up); `verify.rungs.medium` defaults to V3; no topK;
+an outcome critic on every unit; verifier batch 2; `caps.ceilingMult` 0.9 unless the user
+set `ceilingMult` or `ceilingUsd`. The card carries `quality` and the plan log line shows
+`quality: max`. Explicit values in the args always win.
 `verify.waiver` (since 0.1.5): a rails error names any plan whose `rungs.high` or
 `rungs.blocker` is below V2 without a waiver (a non-empty string ≤200 chars).
 
@@ -125,7 +131,7 @@ The foreman picks each unit's agent type; the master never names one directly. I
 | 2 | else `ctx === 'keep'` | `workerCtx` → `dynamic-fanout:worker-ctx` | 30 | 15k + `ctxTok` |
 | 3 | else vector `T === 2` (MCP or long tool loops) | `workerMcp` → `dynamic-fanout:worker-mcp` | 35 | 15k |
 | 4 | else | `worker` → `dynamic-fanout:worker` | 30 | 8k (lean) |
-| — | verifiers / inspectors | `skeptic` / `inspector` | 12 / 6 | 8k (lean) |
+| — | verifiers / inspectors / outcome critics | `skeptic` / `inspector` / `skeptic` (role `critic`) | 20 / 6 / 20 | 8k (lean) |
 | — | `dynamic-fanout:implement`'s whole-diff review | `dynamic-fanout:reviewer` | 30 | 8k (lean) |
 
 The cap is the agent file's `maxTurns` and the same number `price()` uses (`calib.caps`).
@@ -202,7 +208,7 @@ and higher effort.
 Pricing basis for P's non-unit terms: verifiers are priced on the `V3` cell at
 `ultra.inAvg·verifierInFrac`, the sweep cell at `ultra.inAvg`, and the critic at
 `ultra.inAvg·verifierInFrac` — all three with 0 CLAUDE.md context on the lean prefix,
-the verifiers on the skeptic cap (12) and the sweep/critic on the worker cap (30). The
+the verifiers and outcome critics on the skeptic cap (20) and the sweep/critic on the worker cap (30). The
 planned verification spend is reported as `verifyUsd`. The inspector call is
 priced once per unit regardless of how many inspector calls that unit's run ends up
 making (see "Inspector" below).
@@ -325,6 +331,9 @@ an agent could stay under its turn cap while still reading 3-4× what was planne
 making each `Read` too large. It is omitted when a unit's `in` is not set.
 
 A `partial` with `remaining[]` is a capacity signal: one slice run on `p` covers the rest.
+A quote the inspector finds at another line of its file (`actual_line`) is relocated: the
+evidence line is corrected, so the skeptic and `check-evidence.mjs` look in the right place
+(the unit's quote rate still counts it unresolved), and a gap finding citing it is grounded.
 Inspector items are mapped onto the unit's scope files before the check (exact match,
 then a unique suffix match), so a worker citing `fanout.js` for the scoped
 `plugins/x/workflows/fanout.js` is still resolved.
@@ -335,14 +344,18 @@ then a unique suffix match), so a worker citing `fanout.js` for the scoped
 { started: true, card,
   digest: {
     counts: { units, ok, okRerouted, okPromoted, brief, unverified, claims,
-              confirmed, plausible, refuted, unverifiedClaims, pending },
+              confirmed, plausible, overstated, refuted, unverifiedClaims, pending, rescued,
+              critics, gapsFound, gapReruns, uncovered, notes, corrections, bySeverity },
     exceptions: [{ id, cls, reason, cell, why }],     // every non-ok unit
     top: [{ cid, unit, severity, title, verdict, file, line, support }],   // support = 'file:line' or support_cmd
     money: { U, P, R, C, parityBound, committedUsd, rerouteUsd, verifyUsd, outputTokens, note },
     //  committedUsd includes verification spend; verifyUsd = the part drawn by verifiers
     warnings: [], dropped: [{ what, count, reason }],
     invariants: [{ name, ok, lhs, rhs, diffCents }],
-    critic: [ /* deep only: what is missing */ ] },
+    critic: [ /* deep only: what is missing */ ],
+    uncovered: [{ unit, area, why, cause }],   // critic gaps no gap re-run covered
+    notes: [{ unit, cid?, area, why, file, line }] },  // non-material critic gaps at no finding,
+                                                        // and corrections no skeptic judged (cid)
   ledger: {
     units: [{ id, role, vec, parity, p, fb, ctx, check, why, override, outcome, reason,
               verifyBump, attempts: [{ n, tag, cell, kind, mode, cls, estUsd }] }],
@@ -355,7 +368,9 @@ then a unique suffix match), so a worker citing `fanout.js` for the scoped
                    result, assumptions, confidence, uncovered } },
     claims: [{ cid, unit, severity, verifiedSeverity, title, claim, evidence, rung,
                verdict, verdictBy, reason, counter_quote, support, support_cmd, parity,
-               producer, bump, blast, floor, mergedFrom }] } }
+               producer, bump, blast, floor, mergedFrom,
+               criticNote,          // the critic thinks it is overstated (bumped one rung)
+               criticCorrection }] } }  // a non-material critic gap at this finding, shown to its skeptic
 ```
 Read a result with `node scripts/report.mjs <output.json|audited.json>` (header, one row
 per unit with role, cell and outcome, claims sorted by severity with their support;

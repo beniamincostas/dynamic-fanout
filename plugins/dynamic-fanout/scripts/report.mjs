@@ -12,8 +12,9 @@
 // --unit filters to one unit id (its claims + its row). --min-severity keeps that severity and
 // above. --verdict keeps only the listed verdicts (comma-separated, case-insensitive).
 // --payload prints each unit's result payload in full instead of trimmed to 600 chars.
-// Claim severity prints as filed->verified when the skeptic re-rated it; the header counts and
-// the sort use verifiedSeverity ?? severity (--min-severity filters on the filed severity).
+// Claim severity prints as filed->verified when the skeptic re-rated it, followed by
+// [trigger/impact] (0.1.7, filed->verified when the pair changed); the header counts and the
+// sort use verifiedSeverity ?? severity (--min-severity filters on the producer's severity).
 // --json emits the same structure (header, units, claims) as JSON instead of text.
 // Never throws on missing fields; a malformed or partial doc still prints what it has.
 // Zero dependencies; Node >= 20.
@@ -25,7 +26,7 @@ const SEVERITIES = ['info', 'low', 'medium', 'high', 'blocker'];
 const sevRank = (s) => Math.max(0, SEVERITIES.indexOf(s));
 // The skeptic's rating when it has one, else the filed severity (fanout.js stores both).
 const effSev = (c) => c.verifiedSeverity || c.severity;
-export const LEGEND = 'PLAUSIBLE = grounded, not independently re-checked (in a blind audit plausible and confirmed findings were equally often true)';
+export const LEGEND = 'PLAUSIBLE = grounded, not independently re-checked (in a blind audit plausible and confirmed findings were equally often true); OVERSTATED = real, but filed too high (severity re-derived lower from the corrected trigger/impact); [trigger/impact] shows filed->verified';
 
 /** Accept either the Workflow wrapper {summary, agentCount, logs, result} or RESULT itself. */
 export function unwrap(doc) {
@@ -85,7 +86,7 @@ export function build(doc, opts = {}) {
     kind: card.kind || null,
     units: { ok: (digest.counts && (digest.counts.ok + digest.counts.okRerouted + digest.counts.okPromoted)) || 0, total: (digest.counts && digest.counts.units) || unitIds.length },
     claimsByVerdict: digest.counts
-      ? { confirmed: digest.counts.confirmed || 0, plausible: digest.counts.plausible || 0, refuted: digest.counts.refuted || 0, unverified: digest.counts.unverifiedClaims || 0, pending: digest.counts.pending || 0 }
+      ? { confirmed: digest.counts.confirmed || 0, plausible: digest.counts.plausible || 0, overstated: digest.counts.overstated || 0, refuted: digest.counts.refuted || 0, unverified: digest.counts.unverifiedClaims || 0, pending: digest.counts.pending || 0 }
       : null,
     // Counted by verifiedSeverity ?? severity over every claim, before the display filters.
     claimsBySeverity: Object.fromEntries(SEVERITIES.slice().reverse().map((sv) => [sv, allClaims.filter((c) => effSev(c) === sv).length])),
@@ -98,21 +99,28 @@ export function build(doc, opts = {}) {
 function formatClaim(c) {
   const e = (c.evidence || [])[0] || {};
   const sev = c.verifiedSeverity && c.verifiedSeverity !== c.severity ? `${c.severity}->${c.verifiedSeverity}` : c.severity || '?';
+  // Trigger/impact (0.1.7): filed, then ->verified when the skeptic's pair differs.
+  const pair = (t, i) => `${t || '?'}/${i || '?'}`;
+  const filed = c.trigger || c.impact ? pair(c.trigger, c.impact) : null;
+  const ver = c.verifiedTrigger || c.verifiedImpact ? pair(c.verifiedTrigger, c.verifiedImpact) : null;
+  const ti = filed || ver ? ` [${filed || '?'}${ver && ver !== filed ? `->${ver}` : ''}]` : '';
   const verdict = `${c.verdict || 'PENDING'}${c.rung ? `(${c.rung})` : ''}`;
   const loc = e.file ? `${e.file}:${e.line ?? '?'}` : '(no evidence)';
-  const line = `  ${c.cid || '?'}  ${sev}  ${verdict}  ${c.title || ''} — ${loc} — ${c.reason || ''}`.replace(/\s+—\s*$/, '');
+  const line = `  ${c.cid || '?'}  ${sev}${ti}  ${verdict}  ${c.title || ''} — ${loc} — ${c.reason || ''}`.replace(/\s+—\s*$/, '');
   // Merged duplicates keep their own titles, so a wrong merge is visible here.
   const merged = Array.isArray(c.merged) && c.merged.length
     ? `\n      merged: ${c.merged.map((m) => `${m.cid || '?'} ${m.title || ''}`.trim()).join('; ')}`
     : '';
-  return line + merged;
+  // A critic's correction to this finding (0.1.7), shown even when no skeptic addressed it.
+  const corr = c.criticCorrection ? `\n      critic: ${c.criticCorrection}` : '';
+  return line + merged + corr;
 }
 
 export function formatText(rep) {
   const lines = [];
   const h = rep.header;
   lines.push(`report: ${h.kind || '?'} — ${h.units.ok}/${h.units.total} units ok`
-    + (h.claimsByVerdict ? ` — claims: ${h.claimsByVerdict.confirmed} confirmed / ${h.claimsByVerdict.plausible} plausible / ${h.claimsByVerdict.refuted} refuted / ${h.claimsByVerdict.unverified} unverified` : '')
+    + (h.claimsByVerdict ? ` — claims: ${h.claimsByVerdict.confirmed} confirmed / ${h.claimsByVerdict.plausible} plausible / ${h.claimsByVerdict.overstated} overstated / ${h.claimsByVerdict.refuted} refuted / ${h.claimsByVerdict.unverified} unverified` : '')
     + (h.claimsBySeverity && Object.values(h.claimsBySeverity).some(Boolean) ? ` — ${Object.entries(h.claimsBySeverity).map(([k, v]) => `${v} ${k}`).join(' / ')}` : '')
     + (h.money ? ` — money U $${h.money.U} P $${h.money.P} committed $${h.money.committed}` : ''));
   if (rep.units.length) {

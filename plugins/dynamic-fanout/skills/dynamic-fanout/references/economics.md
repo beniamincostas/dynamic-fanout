@@ -55,12 +55,12 @@ estUsd = [ (prefix + g·in)        × inPrice × cacheWrite   // everything writ
 | `effortTurns` | low 0.6 · medium 0.8 · high 1 · xhigh 1.3 · max 1.6 (haiku 0.6) | effort multiplies turns |
 | `outPerTurn` | low 600 · medium 1000 · high 1500 · xhigh 1800 · max 2200; haiku 500 | output tokens per turn |
 | `readFactor` | 1 | g: crew context grows to prefix + g·in. Was 4 (0.1.2–0.1.3); that 4–5× growth was mostly the nested CLAUDE.md that Read attached, gone for lean agents in price model 3 |
-| `caps` | worker 30 · workerMcp 35 · workerCtx 30 · implementer 60 · skeptic 12 · inspector 6 | = each agent file's `maxTurns`; the price uses the same cap |
+| `caps` | worker 30 · workerMcp 35 · workerCtx 30 · implementer 60 · skeptic 20 · inspector 6 | = each agent file's `maxTurns`; the price uses the same cap |
 | `inspectorIn` | 12000 | tokens an inspector call reads |
 | `verifierInFrac` | 0.25 | a verifier (and the critic) is priced at this share of `ultra.inAvg`; skeptics reading through Bash measured 4–10k tokens |
 | `sweepInFrac` | 0.25 | a gap-sweep round is priced at this share of `ultra.inAvg` (it re-reads a slice of scope, not a unit's whole reading) |
 | `ultraReadFactor`, `ultraTurnCap` | 4, 80 | how U's agents are priced (below) |
-| `scaleByRole` | `{work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0}` | per-role prior at or above the fit learned under price model 3 over 9 runs (work 0.6→1.04→0.81, verify 0.27–0.30, inspect 0.30–0.39, sweep 0.79→3.82, noisy); `implement` (since 0.1.5): implementers keep CLAUDE.md, run test suites and take many turns, and priced as `work` they came out ~1.5–2.2× low (two builds) |
+| `scaleByRole` | `{work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0, critic: 0.5}` | per-role prior at or above the fit learned under price model 3 over 9 runs (work 0.6→1.04→0.81, verify 0.27–0.30, inspect 0.30–0.39, sweep 0.79→3.82, noisy); `implement` (since 0.1.5): implementers keep CLAUDE.md, run test suites and take many turns, and priced as `work` they came out ~1.5–2.2× low (two builds); `critic` (since 0.1.7, a prior with no fit yet): the per-unit outcome critic is a lean skeptic spot-reading a quarter of the unit's planned reading |
 | `scale` | 1 | global multiplier on top of `scaleByRole`; honoured only from the current price model, neutral otherwise |
 
 - `in` = tokens the agent is planned to read; `ctxTok` = CLAUDE.md tokens on its path
@@ -186,10 +186,13 @@ expensive**, starving verification further to correct an overrun it had no part 
 |---|---|---|
 | **U** | `ultra.agents` × estUsd(S·E_ref, `inAvg`, `ctxTok`) + `ultra.verifiers` × estUsd(S·E_ref, `verifierInFrac`·`inAvg`, `ctxTok`), all on the unbounded ultracode options (full prefix, g 4, cap 80) | master counts, foreman prices |
 | **P** | Σ units (estUsd(p, in, ctx) on the unit's agent type + one inspector if `check` has `quote` or the unit is B2 + planned re-derivation `rd`) + `expected` × V3 skeptic at `inAvg`·`verifierInFrac` + `rounds` × sweep worker at `inAvg`·`sweepInFrac` (role `sweep`) + (depth `deep`: 1 completeness critic on W·high at `inAvg`·`verifierInFrac`, which also counts toward `plannedAgents`/`maxAgents`) | foreman |
-| **R** | Σ over units with `fb`: `rerouteRate` × estUsd(fb, in, ctx); floor = the largest single repair; cap = `reserveCapPct`·P; **the floor wins** over the cap; the largest B2 repair is earmarked | foreman |
-| **C** | crew ceiling = 0.5·U; with `parityBound` up to 0.8·U; `--ceiling` sets `caps.ceilingUsd` | rail |
+| **R** | Σ over units with `fb`: `rerouteRate` × estUsd(fb, in, ctx), plus Σ over critic units: `gapRate` × the gap re-run (fb, or p when fb is null); floor = the largest single repair; cap = `reserveCapPct`·P; **the floor wins** over the cap; the largest B2 repair is earmarked | foreman |
+| **C** | crew ceiling = 0.5·U (0.9·U with `quality: 'max'` unless the user set `ceilingMult`); with `parityBound` up to 0.8·U; `--ceiling` sets `caps.ceilingUsd` | rail |
 
 Verifier, sweep and critic agents run `ctx:'omit'` on the lean prefix.
+`gapRate` defaults to 0.3 (since 0.1.7): a gap re-run spends the unit's one re-route when its outcome critic names a material gap; P also carries one critic per critic unit (`critic.cell`, default W·medium, role `critic`, on the skeptic cap 20: 35% of skeptics hit the old cap of 12).
+`quality: 'max'` spends more on purpose: two lenses on B≥1 review cards, mediums at V3, no topK, a critic on every unit and verifier batches of 2, under a 0.9·U ceiling. It is still below ultracode, because the crew stays capped and routed.
+
 `rerouteRate` defaults to 0.2 (since 0.1.5: 7 capability failures in 44 units, ~16%, across 7 runs), or the observed rate from routing stats once a role cohort has n≥4.
 
 ### Verification sizing: `expected` (0.1.2, risk-weighted)
@@ -345,9 +348,9 @@ calib: {
   effortTurns: { low: 0.6, medium: 0.8, high: 1, xhigh: 1.3, max: 1.6 },
   outPerTurn: { low: 600, medium: 1000, high: 1500, xhigh: 1800, max: 2200 }, haikuOutPerTurn: 500,
   readFactor: 1, ultraReadFactor: 4, ultraTurnCap: 80,
-  caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
+  caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 20, inspector: 6 },
   inspectorIn: 12000, verifierInFrac: 0.25, sweepInFrac: 0.25,
-  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0 }, scale: 1,
+  scaleByRole: { work: 1.0, verify: 0.3, inspect: 0.3, sweep: 2.0, implement: 2.0, critic: 0.5 }, scale: 1,
   highsPerUnit: 0.9, mediumsPerUnit: 5
 }
 ```

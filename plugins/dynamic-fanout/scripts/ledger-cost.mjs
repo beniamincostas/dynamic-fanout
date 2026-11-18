@@ -6,7 +6,8 @@
 // Reads agent-*.jsonl (+ optional agent-*.meta.json, journal.jsonl labels) in the dir.
 // Each agent is attributed by the cost tag on the last line of its prompt:
 //   ⟦df:<unitId>:<attempt>⟧ work · ⟦df:i:<unitId>:<n>⟧ inspector · ⟦df:v:<batch>:<n>⟧ verifier
-//   ⟦df:s:<round>:1⟧ sweep · ⟦df:c:1:1⟧ critic · no tag -> 'untagged'
+//   ⟦df:s:<round>:1⟧ sweep · ⟦df:c:1:1⟧ critic · ⟦df:k:<unitId>:<n>⟧ outcome-critic (0.1.7)
+//   · no tag -> 'untagged'
 // Usage is summed over assistant messages DEDUPED BY message.id: a streamed message is
 // written once per content block, and the early copies carry partial output_tokens, so the
 // copy with the largest output_tokens wins.
@@ -58,6 +59,7 @@ export function parseTag(inner) {
     if (k === 'v') return { tag, kind: 'verifier', batch: parts.slice(1, -1).join(':'), n };
     if (k === 's') return { tag, kind: 'sweep', round: parts.slice(1, -1).join(':'), n };
     if (k === 'c') return { tag, kind: 'critic', n };
+    if (k === 'k') return { tag, kind: 'outcome-critic', unit: parts.slice(1, -1).join(':'), n };
   }
   return { tag, kind: 'work', unit: parts.slice(0, -1).join(':'), attempt: n };
 }

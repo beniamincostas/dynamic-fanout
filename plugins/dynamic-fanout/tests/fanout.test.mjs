@@ -39,6 +39,7 @@ function responder(map = {}) {
     if (tag.startsWith('v:')) return verdictAll(prompt, 'CONFIRMED')
     if (tag.startsWith('s:')) return okUnit()
     if (tag.startsWith('c:')) return { missing: [] }
+    if (tag.startsWith('k:')) return { coverage: 1, gaps: [], overstated: [] }
     const files = [...prompt.matchAll(/^- (\S+)$/gm)].map(m => m[1])
     return okUnit({ files_read: files })
   }
@@ -694,7 +695,7 @@ test('ownership: every launched cell is on a card or a declared verifier/inspect
     for (const L of res.ledger.units) {
       const work = L.attempts.filter(x => x.kind !== 'rederive-planned' && x.cls !== 'refused')
       assert.ok(work.length <= 4, `${L.id}: at most primary + infra + capacity + re-route`)
-      assert.ok(L.attempts.filter(x => x.kind === 'reroute').length <= 1, `${L.id}: at most one re-route`)
+      assert.ok(L.attempts.filter(x => x.kind === 'reroute' || x.kind === 'gap').length <= 1, `${L.id}: at most one re-route (capability or gap)`)
     }
   }
 })
@@ -814,7 +815,7 @@ const near = (x, y, msg) => assert.ok(Math.abs(x - y) <= 1.5e-4, `${msg || ''} $
 
 test('per-role calibration: agentOpts carries the role; estimates scale by role × global scale', () => {
   const K = core.calibrate()
-  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 })
   assert.equal(K.scale, 1)
   assert.equal(core.agentOpts('implementer', K).role, 'implement')
   for (const k of ['worker', 'workerMcp', 'workerCtx']) assert.equal(core.agentOpts(k, K).role, 'work', k)
@@ -837,18 +838,18 @@ test('per-role calibration: agentOpts carries the role; estimates scale by role 
 
 test('calibrate merges scaleByRole like the other object fields', () => {
   const K = core.calibrate({ pm: 3, scaleByRole: { verify: 0.5 }, scale: 1.2, highsPerUnit: 2 })
-  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.5, inspect: 0.3, sweep: 2, implement: 2.0 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.5, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 })
   assert.equal(K.scale, 1.2)
   assert.equal(K.highsPerUnit, 2)
   assert.equal(K.mediumsPerUnit, 5)
-  assert.deepEqual(core.calibrate().scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 }, 'defaults are not mutated')
+  assert.deepEqual(core.calibrate().scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 }, 'defaults are not mutated')
 })
 
 test('the priced card carries the calibration factors it used', async () => {
   let { res } = await runFanout(baseArgs({ dryRun: true }), responder())
-  assert.deepEqual(res.card.calib, { pm: 3, scale: 1, scaleByRole: { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 } })
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1, scaleByRole: { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 } })
   ;({ res } = await runFanout(baseArgs({ dryRun: true, calib: { pm: 3, scale: 1.5, scaleByRole: { verify: 0.2 } } }), responder()))
-  assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 1, verify: 0.2, inspect: 0.3, sweep: 2, implement: 2.0 } })
+  assert.deepEqual(res.card.calib, { pm: 3, scale: 1.5, scaleByRole: { work: 1, verify: 0.2, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 } })
 })
 
 test('medium defaults to rung V2 (0.1.4): one skeptic per medium', async () => {
@@ -903,19 +904,19 @@ test('blocker/high claims are exempt from topK; topK bounds only the remaining V
 test('price: expected verifier batches follow the expected findings', () => {
   const K = core.calibrate()
   const R = core.DEFAULT_RUNGS
-  // 8 units, standard (batch 3, topK 12): ceil(8·0.9/3) = 3 batches for highs, mediums at the
-  // V2 default: + ceil(min(8·5, 12)/3) = 4
-  assert.equal(core.expectedVerifiers(8, 'standard', {}, R, K), 7)
-  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V2' }, K), 7)
+  // 8 units, standard (batch 3, topK 12): highs sit at V3, whose batches hold at most 2
+  // (0.1.7): ceil(8·0.9/2) = 4, mediums at the V2 default: + ceil(min(8·5, 12)/3) = 4
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, R, K), 8)
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V2' }, K), 8)
   // a medium pinned to V1 reserves none
-  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V1' }, K), 3)
-  // explicit batch and topK
-  assert.equal(core.expectedVerifiers(8, 'standard', { batch: 5, topK: 8 }, { ...R, medium: 'V3' }, K), 2 + 2)
-  // quick depth: batch 5, topK 6
-  assert.equal(core.expectedVerifiers(4, 'quick', {}, { ...R, medium: 'V2' }, K), 1 + 2)
+  assert.equal(core.expectedVerifiers(8, 'standard', {}, { ...R, medium: 'V1' }, K), 4)
+  // explicit batch and topK; V3 mediums also batch by 2
+  assert.equal(core.expectedVerifiers(8, 'standard', { batch: 5, topK: 8 }, { ...R, medium: 'V3' }, K), 4 + 4)
+  // quick depth: batch 5 (2 at V3), topK 6
+  assert.equal(core.expectedVerifiers(4, 'quick', {}, { ...R, medium: 'V2' }, K), 2 + 2)
   // price() uses it when verify.expected is absent, and honours an explicit one
   const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V1' } } })
-  assert.equal(core.price(a, core.validate(a), K).expected, Math.ceil(2 * 0.9 / 3))
+  assert.equal(core.price(a, core.validate(a), K).expected, Math.ceil(2 * 0.9 / 2))
   const b = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' } } })
   assert.equal(core.price(b, core.validate(b), K).expected, 1 + Math.ceil(Math.min(2 * 5, 12) / 3))
   const c = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, expected: 5 } })
@@ -954,7 +955,7 @@ test('price model 3: leak-free defaults', () => {
   assert.equal(K.ultraReadFactor, 4, 'ultracode agents read with Read and still get the nested CLAUDE.md')
   assert.equal(K.verifierInFrac, 0.25)
   assert.equal(K.sweepInFrac, 0.25)
-  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0 })
+  assert.deepEqual(K.scaleByRole, { work: 1, verify: 0.3, inspect: 0.3, sweep: 2, implement: 2.0, critic: 0.5 })
 })
 
 test('sweep is priced on its own role and a fraction of inAvg; the deep critic stays work', async () => {
@@ -1133,27 +1134,7 @@ test('0.1.5: implementers price as their own role', () => {
 
 // ───────────────────────── 0.1.5 t2: severity calibration, findings cap ─────────────────────────
 
-test('0.1.5: the severity rubric is in the unit, sweep and skeptic prompts', async () => {
-  assert.match(core.SEVERITY_RUBRIC, /blocker = /)
-  assert.match(core.SEVERITY_RUBRIC, /Rate by what the code does today, not the worst imaginable case; most findings are medium or low\./)
-  assert.ok(core.RULES.includes(core.SEVERITY_RUBRIC), 'RULES carries the rubric')
-  assert.ok(core.SKEPTIC_RULES.includes(core.SEVERITY_RUBRIC), 'SKEPTIC_RULES carries the rubric')
-  const { calls } = await runFanout(baseArgs({ sweep: { rounds: 1 } }), responder({
-    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'high')] }),
-  }))
-  const unitCall = calls.find(c => tagOf(c.prompt) === 'u1:1')
-  const sweepCall = calls.find(c => tagOf(c.prompt).startsWith('s:'))
-  const skepCall = calls.find(c => tagOf(c.prompt).startsWith('v:'))
-  for (const [name, c] of [['unit', unitCall], ['sweep', sweepCall], ['skeptic', skepCall]]) {
-    assert.ok(c, `${name} call ran`)
-    assert.ok(c.prompt.includes(core.SEVERITY_RUBRIC), `${name} prompt carries the rubric`)
-  }
-  assert.match(core.SKEPTIC_RULES, /For every claim you check, state your own severity rating/)
-})
-
-test('0.1.5: VERDICT requires severity; the findings cap is 15', () => {
-  const item = core.VERDICT.properties.verdicts.items
-  assert.ok(item.required.includes('severity'))
+test('0.1.5: the findings cap is 15', () => {
   assert.equal(core.UNIT_RESULT.properties.findings.maxItems, 15)
   assert.equal(core.MAX_INSPECT_QUOTES, 60)
   assert.equal(core.calibrate().mediumsPerUnit, 5)
@@ -1166,11 +1147,11 @@ test('0.1.5: verifiedSeverity is always stored and drives digest ordering', asyn
     'u1:1': okUnit({ files_read: ['src/a.py'], findings: fs }),
     'u2:1': okUnit({ files_read: ['src/b.py'], findings: [finding('src/b.py', 2, 'medium', 'other')] }),
   })
-  // The skeptic downgrades the high claim t0 to low and states no severity for the rest.
+  // The skeptic re-rates the high claim t0 to misconfig x wrong_outcome (low) and states no pair for the rest.
   const { res } = await runFanout(baseArgs(), (prompt, o, n) => {
     if (!tagOf(prompt).startsWith('v:')) return base(prompt, o, n)
     const r = verdictAll(prompt, 'CONFIRMED')
-    for (const v of r.verdicts) if (prompt.includes(`${v.cid} | high | t0`)) v.severity = 'low'
+    for (const v of r.verdicts) if (prompt.includes(`${v.cid} | high | t0`)) Object.assign(v, { trigger: 'misconfig', impact: 'wrong_outcome' })
     return r
   })
   const verified = res.results.claims.filter(c => c.verdict && c.verdict !== 'PENDING' && c.verdict !== 'UNVERIFIED' && c.rung && c.rung !== 'V0' && c.rung !== 'V1')
@@ -1179,7 +1160,7 @@ test('0.1.5: verifiedSeverity is always stored and drives digest ordering', asyn
   const t0 = res.results.claims.find(c => c.title === 't0')
   assert.equal(t0.severity, 'high', 'the filed severity is kept')
   assert.equal(t0.verifiedSeverity, 'low')
-  assert.equal(t0.rung, 'V3', 'the rung is chosen from the filed severity')
+  assert.equal(t0.rung, 'V3', 'the rung is chosen from the producer\'s severity')
   assert.notEqual(res.digest.top[0].title, 't0', 'top orders by verifiedSeverity')
   assert.equal(res.results.claims.filter(c => c.unit === 'u1').length, 15, 'a 15-finding unit is accepted whole')
 })
@@ -1254,4 +1235,490 @@ test('rail: lenses must be 1 or 2, only on review/research cards, never with n:1
   b.units[1] = { ...b.units[1], n: 1, check: 'tieout+rederive', lenses: 2 }
   await rejects(b, /^card u2: lenses 2 is only for kind review or research/)
   await rejects(b, /^card u2: lenses 2 cannot be combined with n:1/)
+})
+
+// ───────────────────────── 0.1.7: outcome critic + gap escalation ─────────────────────────
+
+const gapCritic = (over = {}) => ({ coverage: 0.5, gaps: [{ area: 'error paths', why: 'never looked at', material: true }], overstated: [], ...over })
+
+test('0.1.7: critic trigger rules', () => {
+  const ids = a => core.validate(a).units.filter(u => u.critic).map(u => u.id)
+  const units = [
+    unit('plain', { vec: 'D1 A0 T1 C0 V1 B0 G0' }),
+    unit('v0', { vec: 'D1 A0 T1 C0 V0 B0 G0' }),
+    unit('blast', { vec: 'D1 A0 T1 C0 V2 B1 G0' }),
+    unit('asked', { vec: 'D1 A0 T1 C0 V2 B0 G0', check: 'set+critic' }),
+  ]
+  assert.deepEqual(ids(baseArgs({ units })), ['v0', 'blast', 'asked'])
+  assert.deepEqual(ids(baseArgs({ kind: 'research', units })), ['v0', 'blast', 'asked'])
+  assert.deepEqual(ids(baseArgs({ kind: 'data', units })), ['asked'], 'data: only an explicit critic check')
+  assert.deepEqual(ids(baseArgs({ kind: 'data', quality: 'max', units })), ['plain', 'v0', 'blast', 'asked'])
+  const V = core.validate(baseArgs({ units }))
+  assert.equal(core.cellKey(V.unitCriticCell), 'opus·medium', 'default critic cell W·medium')
+  const V2 = core.validate(baseArgs({ units, critic: { cell: { model: 'sonnet', effort: 'high' } } }))
+  assert.equal(core.cellKey(V2.unitCriticCell), 'sonnet·high')
+  assert.ok(core.validate(baseArgs({ units, quality: 'best' })).errors.some(e => /^args: quality/.test(e)))
+})
+
+test('0.1.7: critics and expected gap re-runs are priced; the card carries a critic row', async () => {
+  const K = core.calibrate()
+  assert.equal(K.scaleByRole.critic, 0.5)
+  const solo = [unit('a', { vec: 'D1 A0 T1 C0 V1 B0 G0' })]
+  const crit = [unit('a', { vec: 'D1 A0 T1 C0 V1 B1 G0' })]
+  const { res: r0 } = await runFanout(baseArgs({ units: solo, dryRun: true }), responder())
+  const { res: r1 } = await runFanout(baseArgs({ units: crit, dryRun: true }), responder())
+  assert.equal(r0.card.critic.units.length, 0)
+  assert.deepEqual(r1.card.critic.units, ['a'])
+  assert.equal(r1.card.critic.cell, 'opus·medium')
+  assert.ok(r1.card.critic.estUsd > 0 && r1.card.critic.expectedGapReruns > 0)
+  assert.ok(r1.card.money.P > r0.card.money.P, 'P includes the critic')
+  assert.ok(r1.card.money.R >= r0.card.money.R, 'R includes expected gap re-runs')
+  assert.equal(r1.card.units[0].critic, true)
+})
+
+test('0.1.7: a gap re-run is inspected; a gap finding whose quote does not resolve is not added and is listed as uncovered', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 3, 'medium', 'first issue')] }),
+    'k:u1:1': gapCritic(),
+    'u1:2': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 40, 'medium', 'grounded gap'), { ...finding('src/u1.py', 60, 'medium', 'ungrounded gap'), evidence: [{ file: 'src/u1.py', line: 60, quote: 'nope' }] }] }),
+    'i:u1:2': { checks: [{ ref: 'f0.e0', found: true }, { ref: 'f1.e0', found: false }] },
+  }))
+  assert.ok(calls.find(c => tagOf(c.prompt) === 'i:u1:2'), 'the gap run was inspected')
+  const titles = res.results.claims.filter(c => c.unit === 'u1').map(c => c.title).sort()
+  assert.deepEqual(titles, ['first issue', 'grounded gap'])
+  assert.ok(res.digest.uncovered.some(x => x.area === 'ungrounded gap' && /unresolved quote/.test(x.why)))
+})
+
+test('0.1.7: a material gap re-runs the unit once on fb, gaps only; findings are added', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 3, 'medium', 'first issue')] }),
+    'k:u1:1': gapCritic(),
+    'u1:2': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 40, 'medium', 'gap issue')] }),
+  }))
+  const critic = calls.find(c => tagOf(c.prompt) === 'k:u1:1')
+  assert.ok(critic, 'critic ran')
+  assert.equal(critic.opts.agentType, 'dynamic-fanout:skeptic')
+  assert.match(critic.prompt, /f1 \| medium \| first issue \| src\/u1\.py:3 \|/)
+  const gap = calls.find(c => tagOf(c.prompt) === 'u1:2')
+  assert.ok(gap, 'gap run launched')
+  assert.equal(cellOfCall(gap.opts), 'opus·high', 'gap run on fb')
+  assert.match(gap.prompt, /do u1/)
+  assert.match(gap.prompt, /Cover ONLY these gaps:[\s\S]*error paths/)
+  assert.match(gap.prompt, /Do not repeat these findings:[\s\S]*first issue/)
+  assert.equal(calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 2, 'no further run')
+  const titles = res.results.claims.filter(c => c.unit === 'u1').map(c => c.title).sort()
+  assert.deepEqual(titles, ['first issue', 'gap issue'])
+  const L = res.ledger.units[0]
+  assert.equal(L.attempts.filter(x => x.kind === 'gap').length, 1)
+  assert.equal(res.ledger.gapRuns, 1)
+  assert.equal(res.ledger.critics.length, 1)
+  assert.equal(res.digest.counts.gapsFound, 1)
+  assert.equal(res.digest.counts.gapReruns, 1)
+  assert.equal(res.digest.counts.uncovered, 0)
+  assert.ok(res.digest.money.rerouteUsd > 0, 'paid from the reserve')
+})
+
+test('0.1.7: low coverage on a recall-critical unit escalates; full coverage without material gaps does not', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V0 B0 G0' })] })
+  const low = await runFanout(a, responder({ 'k:u1:1': { coverage: 0.4, gaps: [{ area: 'config', why: 'skipped', material: false }], overstated: [] } }))
+  assert.equal(low.res.ledger.gapRuns, 1)
+  const fine = await runFanout(a, responder({ 'k:u1:1': { coverage: 0.9, gaps: [{ area: 'style', why: 'minor', material: false }], overstated: [] } }))
+  assert.equal(fine.res.ledger.gapRuns, 0)
+  assert.equal(fine.calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 1)
+})
+
+test('0.1.7: non-material gaps are kept: one at a finding reaches its skeptic, the rest go to digest.notes', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 16, 'high', 'loop skips last item')] }),
+    'k:u1:1': { coverage: 0.9, overstated: [], gaps: [
+      { area: 'stated failure value is wrong', why: 'total([500]) is 514, not 515', material: false, evidence: { file: 'u1.py', line: 17, quote: 'for i in range' } },
+      { area: 'rounding', why: 'round() is half-to-even', material: false, evidence: { file: 'src/u1.py', line: 9, quote: 'round(' } },
+      { area: 'boundary', why: 'checked, no defect', material: false },
+    ] },
+  }))
+  assert.equal(res.ledger.gapRuns, 0, 'non-material gaps do not escalate')
+  assert.equal(calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 1)
+  const claim = res.results.claims.find(c => c.cid === 'u1.f1')
+  assert.match(claim.criticCorrection, /514, not 515/)
+  assert.equal(claim.criticNote, null, 'a correction is not an overstated flag')
+  const skeptic = calls.find(c => tagOf(c.prompt).startsWith('v:') && c.prompt.includes('u1.f1 |'))
+  assert.match(skeptic.prompt, /an outcome critic adds[^\n]*514, not 515/)
+  assert.deepEqual(res.digest.notes.map(n => n.area), ['rounding', 'boundary'])
+  assert.equal(res.digest.notes[0].file, 'src/u1.py')
+  assert.equal(res.digest.notes[1].file, null)
+  assert.equal(res.digest.counts.notes, 2)
+  assert.equal(res.digest.counts.corrections, 1)
+  assert.equal(res.digest.counts.uncovered, 0)
+})
+
+test('0.1.7: a merged duplicate keeps its critic notes', () => {
+  const mk = (cid, unit, note, corr) => ({ cid, unit, severity: 'high', title: 'loop skips last item', claim: 'x', evidence: [{ file: 'src/a.py', line: 16, quote: 'q' }], producer: { model: 'opus' }, criticNote: note, criticCorrection: corr })
+  const out = core.dedupClaims([mk('u1.f1', 'u1', null, 'value is 514'), mk('u2.f1', 'u2', 'only in tests', 'sign wider')], ['file', 'line'])
+  assert.equal(out.length, 1)
+  assert.equal(out[0].criticNote, 'only in tests')
+  assert.equal(out[0].criticCorrection, 'value is 514 | sign wider')
+})
+
+test('0.1.7: a parity unit (fb null) runs its gap re-run on p', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V0 B2 G0', p: { model: 'opus', effort: 'xhigh' }, fb: null })] })
+  const { res, calls } = await runFanout(a, responder({ 'k:u1:1': gapCritic() }))
+  const gap = calls.find(c => tagOf(c.prompt) === 'u1:2')
+  assert.ok(gap, 'gap run launched')
+  assert.equal(cellOfCall(gap.opts), 'opus·xhigh')
+  assert.equal(res.ledger.gapRuns, 1)
+})
+
+test('0.1.7: a unit already re-routed for capability gets no gap run; its gaps go to uncovered', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ status: 'blocked', blocked_reason: 'too_hard' }),
+    'k:u1:1': gapCritic(),
+  }))
+  assert.equal(res.ledger.units[0].outcome, 'ok-rerouted')
+  assert.equal(calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 2, 'primary + re-route only')
+  assert.equal(res.ledger.gapRuns, 0)
+  assert.deepEqual(res.digest.uncovered.map(x => [x.unit, x.area, x.why]), [['u1', 'error paths', 'never looked at']])
+  assert.equal(res.digest.counts.uncovered, 1)
+})
+
+test('0.1.7: a refused reserve lists the gaps in digest.uncovered, never silently', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })], carry: { rerouteUsd: 1000 } })
+  const { res, calls } = await runFanout(a, responder({ 'k:u1:1': gapCritic() }))
+  assert.equal(calls.filter(c => /^u1:\d+$/.test(tagOf(c.prompt))).length, 1)
+  const L = res.ledger.units[0]
+  assert.equal(L.attempts.find(x => x.kind === 'gap').cls, 'refused')
+  assert.equal(res.digest.uncovered.length, 1)
+  assert.equal(res.digest.uncovered[0].area, 'error paths')
+  assert.match(res.digest.uncovered[0].cause, /reserve/)
+  assert.equal(res.digest.counts.gapReruns, 0)
+})
+
+test('0.1.7: an overstated flag bumps the finding one rung and its note reaches the skeptic', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const prim = okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 3, 'medium', 'big claim'), finding('src/u1.py', 9, 'medium', 'other claim')] })
+  const base = await runFanout(a, responder({ 'u1:1': prim }))
+  const flagged = await runFanout(a, responder({ 'u1:1': prim, 'k:u1:1': { coverage: 0.9, gaps: [], overstated: [{ fid: 'f1', why: 'only reachable from tests' }] } }))
+  const bump = (r, cid) => r.res.results.claims.find(c => c.cid === cid).bump
+  assert.equal(bump(flagged, 'u1.f1'), bump(base, 'u1.f1') + 1)
+  assert.equal(bump(flagged, 'u1.f2'), bump(base, 'u1.f2'))
+  const skeptic = flagged.calls.find(c => tagOf(c.prompt).startsWith('v:') && c.prompt.includes('u1.f1 |'))
+  assert.match(skeptic.prompt, /a reviewer thinks this may be overstated because only reachable from tests/)
+  assert.equal(flagged.res.results.claims.find(c => c.cid === 'u1.f1').criticNote, 'only reachable from tests')
+})
+
+// ───────────────────────── 0.1.7 t2: OVERSTATED verdict, calibrated severity ─────────────────────────
+
+const tf = (file, line, trigger, impact, title = 'issue', extra = {}) => ({ title, trigger, impact, claim: `${title} in ${file}`, evidence: [{ file, line, quote: 'x = 1' }], ...extra })
+
+test('0.1.7: SEVERITY_MATRIX maps trigger x impact to severity', () => {
+  const M = core.SEVERITY_MATRIX
+  assert.deepEqual(M.customer_money_legal, { normal: 'blocker', edge: 'high', misconfig: 'medium', theoretical: 'low' })
+  assert.deepEqual(M.wrong_outcome, { normal: 'high', edge: 'medium', misconfig: 'low', theoretical: 'low' })
+  assert.deepEqual(M.operational, { normal: 'medium', edge: 'low', misconfig: 'low', theoretical: 'info' })
+  assert.deepEqual(M.cosmetic, { normal: 'low', edge: 'info', misconfig: 'info', theoretical: 'info' })
+  assert.equal(core.deriveSeverity({ trigger: 'edge', impact: 'wrong_outcome', severity: 'blocker' }), 'medium', 'the matrix wins over a filed label')
+  assert.equal(core.deriveSeverity({ severity: 'high' }), 'high', 'without a valid pair the filed severity is kept')
+  assert.equal(core.deriveSeverity({ trigger: 'edge' }), 'medium')
+})
+
+test('0.1.7: UNIT_RESULT requires trigger and impact (severity optional); VERDICT adds OVERSTATED', () => {
+  const it = core.UNIT_RESULT.properties.findings.items
+  assert.ok(it.required.includes('trigger') && it.required.includes('impact'))
+  assert.ok(!it.required.includes('severity'), 'severity is optional')
+  assert.deepEqual(it.properties.trigger.enum, ['normal', 'edge', 'misconfig', 'theoretical'])
+  assert.deepEqual(it.properties.impact.enum, ['customer_money_legal', 'wrong_outcome', 'operational', 'cosmetic'])
+  const v = core.VERDICT.properties.verdicts.items
+  assert.ok(v.properties.verdict.enum.includes('OVERSTATED'))
+  assert.ok(v.required.includes('trigger') && v.required.includes('impact'))
+  assert.ok(!v.required.includes('severity'))
+})
+
+test('0.1.7: the foreman derives severity from trigger x impact, keeps filedSeverity and picks the rung from it', async () => {
+  const { res, calls } = await runFanout(baseArgs(), responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [
+      tf('src/a.py', 3, 'normal', 'customer_money_legal', 'money', { severity: 'low' }),
+      tf('src/a.py', 9, 'theoretical', 'operational', 'theory', { severity: 'blocker' }),
+    ] }),
+  }))
+  const by = t => res.results.claims.find(c => c.title === t)
+  assert.deepEqual([by('money').severity, by('money').filedSeverity, by('money').trigger, by('money').impact], ['blocker', 'low', 'normal', 'customer_money_legal'])
+  assert.equal(by('money').rung, 'V3', 'rung from the derived severity')
+  assert.deepEqual([by('theory').severity, by('theory').filedSeverity, by('theory').rung], ['info', 'blocker', 'V0'])
+  const skep = calls.find(c => tagOf(c.prompt).startsWith('v:'))
+  assert.match(skep.prompt, /filed trigger: normal, impact: customer_money_legal/)
+})
+
+test('0.1.7: the prompts explain trigger and impact one line each, replacing the free rubric', async () => {
+  assert.match(core.SEVERITY_RUBRIC, /^- trigger: normal = /m)
+  assert.match(core.SEVERITY_RUBRIC, /^- impact: customer_money_legal = /m)
+  assert.doesNotMatch(core.SEVERITY_RUBRIC, /blocker = /)
+  assert.ok(core.RULES.includes(core.SEVERITY_RUBRIC))
+  assert.ok(core.SKEPTIC_RULES.includes(core.SEVERITY_RUBRIC))
+  assert.match(core.SKEPTIC_RULES, /- OVERSTATED: /)
+  assert.match(core.SKEPTIC_RULES, /- REFUTED: .*evidence shows the claim is false/)
+  assert.match(core.SKEPTIC_RULES, /state your own trigger and impact/)
+  const { calls } = await runFanout(baseArgs({ sweep: { rounds: 1 } }), responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'normal', 'wrong_outcome')] }),
+  }))
+  for (const pre of ['u1:1', 's:', 'v:']) {
+    const c = calls.find(x => tagOf(x.prompt).startsWith(pre))
+    assert.ok(c && c.prompt.includes(core.SEVERITY_RUBRIC), `${pre} prompt carries trigger and impact`)
+  }
+})
+
+test('0.1.7: OVERSTATED needs support and a corrected trigger/impact, else PLAUSIBLE', () => {
+  const ok = { verdict: 'OVERSTATED', reason: 'r', support_cmd: 'grep -n x', trigger: 'edge', impact: 'operational' }
+  assert.equal(core.normalizeVerdict(ok).verdict, 'OVERSTATED')
+  assert.equal(core.normalizeVerdict({ ...ok, support_cmd: undefined }).verdict, 'PLAUSIBLE', 'no support')
+  assert.equal(core.normalizeVerdict({ ...ok, trigger: undefined }).verdict, 'PLAUSIBLE', 'no corrected trigger')
+  const m = core.mergeVerdicts([{ verdict: 'CONFIRMED', reason: 'a', support_cmd: 'g' }, { ...ok, reason: 'b' }])
+  assert.equal(m.verdict, 'OVERSTATED', 'confirmed + overstated: real, but overstated')
+})
+
+test('0.1.7: an OVERSTATED claim counts as real, not refuted; verifiedSeverity comes from the skeptic trigger/impact', async () => {
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'normal', 'wrong_outcome', 'big')] }),
+    'u2:1': okUnit({ files_read: ['src/b.py'], findings: [tf('src/b.py', 4, 'normal', 'wrong_outcome', 'other')] }),
+  })
+  const { res } = await runFanout(baseArgs(), (prompt, o, n) => {
+    if (!tagOf(prompt).startsWith('v:')) return base(prompt, o, n)
+    if (prompt.includes('| big')) return verdictAll(prompt, 'OVERSTATED', { support_cmd: 'grep -n x', trigger: 'misconfig', impact: 'wrong_outcome' })
+    return verdictAll(prompt, 'CONFIRMED', { trigger: 'normal', impact: 'wrong_outcome' })
+  })
+  const big = res.results.claims.find(c => c.title === 'big')
+  assert.equal(big.verdict, 'OVERSTATED')
+  assert.deepEqual([big.severity, big.verifiedSeverity, big.verifiedTrigger, big.verifiedImpact], ['high', 'low', 'misconfig', 'wrong_outcome'])
+  assert.equal(res.digest.counts.overstated, 1)
+  assert.equal(res.digest.counts.refuted, 0)
+  assert.equal(res.digest.counts.confirmed, 1)
+})
+
+test('0.1.7: an OVERSTATED verdict that rates no lower than filed becomes CONFIRMED with the correction kept', async () => {
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'normal', 'wrong_outcome', 'big')] }),
+    'u2:1': okUnit({ files_read: ['src/b.py'], findings: [tf('src/b.py', 4, 'normal', 'wrong_outcome', 'other')] }),
+  })
+  const { res } = await runFanout(baseArgs(), (prompt, o, n) => {
+    if (!tagOf(prompt).startsWith('v:')) return base(prompt, o, n)
+    if (prompt.includes('| big')) return verdictAll(prompt, 'OVERSTATED', { support_cmd: 'grep -n x', trigger: 'normal', impact: 'wrong_outcome', reason: 'example value is 1545, not 1245' })
+    return verdictAll(prompt, 'CONFIRMED', { trigger: 'normal', impact: 'wrong_outcome' })
+  })
+  const big = res.results.claims.find(c => c.title === 'big')
+  assert.equal(big.verdict, 'CONFIRMED')
+  assert.equal(big.verifiedSeverity, big.severity)
+  assert.match(big.reason, /^confirmed at its filed severity; details corrected: .*1545/)
+  assert.equal(res.digest.counts.overstated, 0)
+  assert.equal(res.digest.counts.confirmed, 2)
+})
+
+test('0.1.7: critic and skeptic rules send a wrong example value to the correction path, not to OVERSTATED', async () => {
+  assert.match(core.SKEPTIC_RULES, /severity stands is CONFIRMED/)
+  const { calls } = await runFanout(baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] }), responder())
+  const critic = calls.find(c => tagOf(c.prompt) === 'k:u1:1')
+  assert.match(critic.prompt, /wrong example input or failure value[^\n]*is not overstated: list it under gaps with material false and evidence at that finding's line/)
+})
+
+test('0.1.7 lens review: a V4 panel split CONFIRMED vs OVERSTATED (rated lower) stays OVERSTATED', async () => {
+  const a = baseArgs()
+  a.units[0].check = 'quote+V4'
+  const base = responder({ 'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'normal', 'wrong_outcome', 'split')] }) })
+  const { res } = await runFanout(a, (prompt, o, n) => {
+    const tag = tagOf(prompt)
+    if (!tag.startsWith('v:') || !prompt.includes('| split')) return base(prompt, o, n)
+    return tag.endsWith(':1')
+      ? verdictAll(prompt, 'CONFIRMED', { trigger: 'normal', impact: 'wrong_outcome' })
+      : verdictAll(prompt, 'OVERSTATED', { support_cmd: 'grep -n x', trigger: 'edge', impact: 'wrong_outcome', reason: 'only on edge input' })
+  })
+  const c = res.results.claims.find(x => x.title === 'split')
+  assert.equal(c.rung, 'V4')
+  assert.equal(c.verdict, 'OVERSTATED', 'the lens that rated it lower keeps the overstated signal')
+  assert.equal(res.digest.counts.overstated, 1)
+})
+
+test('0.1.7 lens review: an OVERSTATED rated above filed becomes CONFIRMED and says so', async () => {
+  const base = responder({ 'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'edge', 'wrong_outcome', 'up')] }) })
+  const { res } = await runFanout(baseArgs(), (prompt, o, n) => {
+    if (!tagOf(prompt).startsWith('v:') || !prompt.includes('| up')) return base(prompt, o, n)
+    return verdictAll(prompt, 'OVERSTATED', { support_cmd: 'grep -n x', trigger: 'normal', impact: 'customer_money_legal', reason: 'r' })
+  })
+  const c = res.results.claims.find(x => x.title === 'up')
+  assert.equal(c.verdict, 'CONFIRMED')
+  assert.match(c.reason, /^confirmed rated blocker, above its filed medium; details corrected/)
+})
+
+test('0.1.7 lens review: a correction on a claim no skeptic judges (low, V0) is listed in digest.notes with its cid', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 20, 'low', 'minor thing')] }),
+    'k:u1:1': { coverage: 0.9, overstated: [], gaps: [{ area: 'value wrong', why: 'it is 7, not 8', material: false, evidence: { file: 'src/u1.py', line: 21, quote: 'x' } }] },
+  }))
+  const c = res.results.claims.find(x => x.cid === 'u1.f1')
+  assert.equal(c.rung, 'V0')
+  assert.match(c.criticCorrection, /7, not 8/)
+  const n = res.digest.notes.find(x => x.cid === 'u1.f1')
+  assert.ok(n, 'listed in notes')
+  assert.match(n.area, /no skeptic judged it \(V0\)/)
+  assert.match(n.why, /7, not 8/)
+})
+
+test('0.1.7 lens review: a correction goes to the nearest finding, not the first within 3 lines', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 10, 'high', 'first'), finding('src/u1.py', 13, 'high', 'second')] }),
+    'k:u1:1': { coverage: 0.9, overstated: [], gaps: [{ area: 'value', why: 'is 514', material: false, evidence: { file: 'src/u1.py', line: 13, quote: 'x' } }] },
+  }))
+  const by = t => res.results.claims.find(x => x.title === t)
+  assert.equal(by('first').criticCorrection, null)
+  assert.match(by('second').criticCorrection, /is 514/)
+})
+
+test('0.1.7 lens review: dedup joins note parts without repeating one', () => {
+  const mk = (cid, corr) => ({ cid, unit: cid.split('.')[0], severity: 'high', title: 'loop skips last item', claim: 'x', evidence: [{ file: 'src/a.py', line: 16, quote: 'q' }], producer: { model: 'opus' }, criticCorrection: corr })
+  const out = core.dedupClaims([mk('u1.f1', 'a'), mk('u2.f1', 'b'), mk('u3.f1', 'b')], ['file', 'line'])
+  assert.equal(out.length, 1)
+  assert.equal(out[0].criticCorrection, 'a | b')
+})
+
+test('0.1.7 lens review: with a material gap, a correction to a finding goes to it, not to the gap re-run', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res, calls } = await runFanout(a, responder({
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 16, 'high', 'loop bug')] }),
+    'k:u1:1': { coverage: 0.6, overstated: [], gaps: [
+      { area: 'error paths', why: 'never looked at', material: true },
+      { area: 'value wrong', why: 'total is 514, not 515', material: false, evidence: { file: 'src/u1.py', line: 17, quote: 'x' } },
+    ] },
+    'u1:2': okUnit({ files_read: ['src/u1.py'], findings: [] }),
+  }))
+  const gap = calls.find(c => tagOf(c.prompt) === 'u1:2')
+  assert.ok(gap, 'gap run launched for the material gap')
+  assert.match(gap.prompt, /error paths/)
+  assert.doesNotMatch(gap.prompt, /514, not 515/)
+  assert.match(res.results.claims.find(x => x.title === 'loop bug').criticCorrection, /514, not 515/)
+})
+
+test('0.1.7 lens review: a quote the inspector finds at another line is relocated, and a gap finding with it is kept', async () => {
+  const a = baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] })
+  const { res } = await runFanout(a, responder({
+    // 3 of 4 quotes resolve (0.75 passes the quote check); the 4th sits at another line.
+    'u1:1': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 3, 'medium', 'a1'), finding('src/u1.py', 5, 'medium', 'a2'), finding('src/u1.py', 7, 'medium', 'a3'), finding('src/u1.py', 30, 'medium', 'first issue')] }),
+    'i:u1:1': { checks: [{ ref: 'f0.e0', found: true }, { ref: 'f1.e0', found: true }, { ref: 'f2.e0', found: true }, { ref: 'f3.e0', found: false, actual_line: 9 }] },
+    'k:u1:1': gapCritic(),
+    'u1:2': okUnit({ files_read: ['src/u1.py'], findings: [finding('src/u1.py', 40, 'medium', 'gap at wrong line')] }),
+    'i:u1:2': { checks: [{ ref: 'f0.e0', found: false, actual_line: 55 }] },
+  }))
+  const by = t => res.results.claims.find(x => x.title === t)
+  assert.equal(by('first issue').evidence[0].line, 9, 'primary evidence line corrected')
+  assert.ok(by('gap at wrong line'), 'relocated gap finding kept')
+  assert.equal(by('gap at wrong line').evidence[0].line, 55)
+  assert.ok(!res.digest.uncovered.some(x => x.area === 'gap at wrong line'))
+})
+
+test('0.1.7 lens review: the critic is told not to list checked-and-fine areas as gaps', async () => {
+  const { calls } = await runFanout(baseArgs({ units: [unit('u1', { vec: 'D1 A0 T1 C0 V1 B1 G0' })] }), responder())
+  assert.match(calls.find(c => tagOf(c.prompt) === 'k:u1:1').prompt, /Do not list areas you checked and found fine, or parts outside the brief/)
+})
+
+// ───────────────────────── 0.1.7 verification capacity ─────────────────────────
+
+test('0.1.7: skeptic turn cap is 20 in the calibration card', () => {
+  assert.equal(core.calibrate().caps.skeptic, 20)
+})
+
+test('0.1.7: V3/V4 verifier batches hold at most 2 claims; V2 keeps the configured batch', async () => {
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' }, batch: 5 } })
+  const { calls } = await runFanout(a, responder({
+    'u2:1': okUnit({ files_read: ['src/b.py'], findings: [
+      ...[10, 20, 30, 40, 50].map((l, i) => finding('src/b.py', l, 'high', `h${i}`)),
+      ...[60, 70, 80].map((l, i) => finding('src/b.py', l, 'medium', `m${i}`)),
+    ] }),
+  }))
+  const v = calls.filter(c => tagOf(c.prompt).startsWith('v:'))
+  const sizes = v.map(c => (c.prompt.match(/^c\S* \| (high|medium) \|/gm) || []).length)
+  const highs = v.filter(c => /\| high \|/.test(c.prompt))
+  assert.equal(highs.length, 3, '5 V3 claims → 3 batches of at most 2')
+  for (const c of highs) assert.ok((c.prompt.match(/\| high \|/g) || []).length <= 2)
+  const meds = v.filter(c => /\| medium \|/.test(c.prompt))
+  assert.equal(meds.length, 1, 'V2 claims keep batch 5')
+  assert.ok(sizes.length === v.length)
+})
+
+test('0.1.7: a verifier batch that returns null retries once on the same cell', async () => {
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } } } })
+  const fs = { 'u2:1': okUnit({ files_read: ['src/b.py'], findings: [finding('src/b.py', 10, 'high', 'h1')] }) }
+  let seen = 0
+  let r = await runFanout(a, responder({ ...fs, 'v:b1:1': p => (++seen === 1 ? null : verdictAll(p, 'CONFIRMED')) }), { sequential: true })
+  let v = r.calls.filter(c => tagOf(c.prompt) === 'v:b1:1')
+  assert.equal(v.length, 2)
+  assert.equal(cellOfCall(v[0].opts), cellOfCall(v[1].opts))
+  assert.equal(r.res.results.claims.find(c => c.title === 'h1').verdict, 'CONFIRMED')
+  assert.equal(r.res.ledger.verifierRetries, 1)
+  // twice null → UNVERIFIED with the infra reason; never a third call
+  r = await runFanout(a, responder({ ...fs, 'v:b1:1': null }), { sequential: true })
+  v = r.calls.filter(c => tagOf(c.prompt) === 'v:b1:1')
+  assert.equal(v.length, 2)
+  const h1 = r.res.results.claims.find(c => c.title === 'h1')
+  assert.equal(h1.verdict, 'UNVERIFIED')
+  assert.equal(h1.reason, 'verifier failed twice (infra)')
+  assert.equal(r.res.ledger.verifierRetries, 1)
+  // a healthy run retries nothing
+  r = await runFanout(a, responder(fs))
+  assert.equal(r.res.ledger.verifierRetries, 0)
+})
+
+test('0.1.7: default topK grows with the V2+ claims; quality max has no topK', async () => {
+  const meds = Array.from({ length: 30 }, (_, i) => finding('src/b.py', 10 + i * 40, 'medium', `m${i}`))
+  const fs = { 'u2:1': okUnit({ files_read: ['src/b.py'], findings: meds }) }
+  const a = baseArgs({ verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' } }, caps: { pauseUsd: 1000 } })
+  let { res } = await runFanout(a, responder(fs))
+  // max(12, ceil(0.5 · 30)) = 15
+  assert.equal(res.results.claims.filter(c => c.verdictBy === 'topK').length, 15)
+  assert.equal(res.results.claims.find(c => c.verdictBy === 'topK').reason, 'beyond topK 15')
+  // an explicit topK still wins
+  ;({ res } = await runFanout(baseArgs({ verify: { ...a.verify, topK: 4 }, caps: a.caps }), responder(fs)))
+  assert.equal(res.results.claims.filter(c => c.verdictBy === 'topK').length, 26)
+  ;({ res } = await runFanout(baseArgs({ verify: a.verify, caps: a.caps, quality: 'max' }), responder(fs)))
+  assert.equal(res.results.claims.filter(c => c.verdictBy === 'topK').length, 0)
+  // pure rule
+  assert.equal(core.verifySizing({}, 'standard', 30).topK, 15)
+  assert.equal(core.verifySizing({}, 'standard', 4).topK, 12)
+  assert.equal(core.verifySizing({}, 'standard', 4, 'max').topK, Infinity)
+  assert.equal(core.verifySizing({ topK: 3 }, 'standard', 30, 'max').topK, 3)
+})
+
+test('0.1.7: rules tell units never to cite a scratchpad or temp copy', () => {
+  assert.match(core.RULES, /never cite a scratchpad or temp copy/)
+})
+
+// ───────────────────────── 0.1.7: quality profile ─────────────────────────
+
+test('0.1.7: quality max profile — lenses on B>=1 review cards, medium V3, batch 2, ceilingMult 0.9, card shows it', () => {
+  const units = [
+    unit('rb1', { vec: 'D1 A0 T1 C0 V1 B1 G0' }),
+    unit('rb0', { vec: 'D1 A0 T1 C0 V1 B0 G0' }),
+    unit('rone', { vec: 'D1 A0 T1 C0 V1 B2 G0', lenses: 1 }),
+  ]
+  const std = core.validate(baseArgs({ units }))
+  assert.deepEqual(std.units.map(u => u.id), ['rb1', 'rb0', 'rone'], 'standard: no default lenses')
+  assert.equal(std.rungs.medium, 'V2')
+  const V = core.validate(baseArgs({ units, quality: 'max' }))
+  assert.deepEqual(V.errors, [])
+  assert.deepEqual(V.units.map(u => u.id), ['rb1A', 'rb1B', 'rb0', 'rone'], 'B>=1 review card splits; explicit lenses 1 wins')
+  assert.equal(V.rungs.medium, 'V3')
+  assert.equal(core.validate(baseArgs({ units, quality: 'max', verify: { cells: { V3: { effort: 'high' } }, rungs: { medium: 'V2' } } })).rungs.medium, 'V2', 'explicit rung wins')
+  // research cards keep the master's lenses choice; the default is for review
+  assert.equal(core.validate(baseArgs({ kind: 'research', units, quality: 'max' })).units.length, 3)
+  assert.equal(core.verifySizing({}, 'standard', 4, 'max').batch, 2)
+  assert.equal(core.verifySizing({ batch: 4 }, 'standard', 4, 'max').batch, 4)
+  assert.equal(core.verifySizing({}, 'standard', 4).batch, 3)
+  const K = core.calibrate()
+  const Vm = core.validate(baseArgs({ quality: 'max' }))
+  assert.equal(core.price(baseArgs({ quality: 'max' }), Vm, K).mult, 0.9)
+  assert.equal(core.price(baseArgs({ quality: 'max', caps: { pauseUsd: 100, ceilingMult: 0.6 } }), Vm, K).mult, 0.6, 'a user ceiling wins')
+  assert.equal(core.price(baseArgs(), core.validate(baseArgs()), K).mult, 0.5)
+  const M = core.price(baseArgs({ quality: 'max' }), Vm, K)
+  assert.equal(core.buildCard(baseArgs({ quality: 'max' }), Vm, M, K).quality, 'max')
+  assert.equal(core.buildCard(baseArgs(), core.validate(baseArgs()), core.price(baseArgs(), core.validate(baseArgs()), K), K).quality, 'standard')
 })

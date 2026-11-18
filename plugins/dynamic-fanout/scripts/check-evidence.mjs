@@ -8,11 +8,12 @@
 // collapsed in that window. A quote found only elsewhere in the file reports `foundAt` but
 // stays unresolved (a drifted line is not grounded evidence).
 // REFUTED verdicts: an unresolved counter_quote downgrades REFUTED -> PLAUSIBLE.
-// CONFIRMED verdicts: a skeptic's own `support` quote is audited exactly like counter_quote;
-// an unresolved one downgrades CONFIRMED -> PLAUSIBLE (reason 'support'). support_cmd (the
+// CONFIRMED / OVERSTATED verdicts: a skeptic's own `support` quote is audited exactly like
+// counter_quote; an unresolved one downgrades CONFIRMED or OVERSTATED -> PLAUSIBLE (reason 'support').
+// OVERSTATED (0.1.7) = real, but filed too high (a lower trigger x impact): a real finding. support_cmd (the
 // empty search behind an absence claim) is not audited, and a missing support is the
 // foreman's job (it never lets an unsupported CONFIRMED through).
-// CONFIRMED / PLAUSIBLE with any unresolved evidence quote -> UNVERIFIED (reason 'evidence').
+// CONFIRMED / OVERSTATED / PLAUSIBLE with any unresolved evidence quote -> UNVERIFIED (reason 'evidence').
 // A downgraded claim gets verdictBy 'check-evidence', a reason naming the failed quotes, and
 // keeps the verifier's verdict/reason/verdictBy in verdictBeforeAudit / reasonBeforeAudit /
 // verdictByBeforeAudit. Input: the Workflow output file ({summary, agentCount, logs, result})
@@ -37,7 +38,7 @@ export const WINDOW = 3;
 
 // Verdict strength, used to enforce downgrade-only. REFUTED sits beside CONFIRMED:
 // both are verifier-backed; losing the counter-quote drops REFUTED to PLAUSIBLE.
-const RANK = { CONFIRMED: 3, REFUTED: 3, PLAUSIBLE: 2, UNVERIFIABLE: 1, UNVERIFIED: 1 };
+const RANK = { CONFIRMED: 3, OVERSTATED: 3, REFUTED: 3, PLAUSIBLE: 2, UNVERIFIABLE: 1, UNVERIFIED: 1 };
 
 /** Accept either the Workflow wrapper {summary, agentCount, logs, result} or RESULT itself. */
 export function unwrap(doc) {
@@ -223,14 +224,14 @@ export function audit(result, { root = process.cwd() } = {}) {
       if (cq.resolved) report.counterResolved++;
       else { verdict = 'PLAUSIBLE'; reason = 'counter_quote'; }
     }
-    if (verdict === 'CONFIRMED' && c.support != null) {
+    if ((verdict === 'CONFIRMED' || verdict === 'OVERSTATED') && c.support != null) {
       const sq = checkCounterQuote(c.support, c, root, cache, opts);
       item.support = sq;
       report.supportQuotes++;
       if (sq.resolved) report.supportResolved++;
       else { verdict = 'PLAUSIBLE'; reason = 'support'; }
     }
-    if ((verdict === 'CONFIRMED' || verdict === 'PLAUSIBLE') && evid.some((e) => !e.resolved)) {
+    if ((verdict === 'CONFIRMED' || verdict === 'OVERSTATED' || verdict === 'PLAUSIBLE') && evid.some((e) => !e.resolved)) {
       verdict = 'UNVERIFIED';
       reason = 'evidence';
     }
@@ -268,6 +269,7 @@ export function patchOutput(doc, claims, report) {
       const k = (v) => claims.filter((c) => c.verdict === v).length;
       d.counts.confirmed = k('CONFIRMED');
       d.counts.plausible = k('PLAUSIBLE');
+      d.counts.overstated = k('OVERSTATED');
       d.counts.refuted = k('REFUTED');
       d.counts.unverifiedClaims = claims.filter((c) => c.verdict === 'UNVERIFIED' || c.verdict === 'UNVERIFIABLE').length;
     }
