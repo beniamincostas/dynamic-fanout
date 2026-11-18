@@ -21,8 +21,10 @@ after a review that cost $58.58. The workflow now prices and meters every launch
 1. **It prices every theme through the foreman** (`kind: 'implement'`, `dryRun: true`,
    one unit card per theme) before anything runs, and refuses to start if the estimate
    exceeds `caps.ceilingUsd`.
-2. **The reviewer's cost is reserved up front**: estimate = Σ theme estimates +
-   `1.5 × max(theme estimate)` for the whole-diff review, and the review's share is held
+2. **The review's cost is reserved up front**: estimate = Σ theme estimates +
+   `3 × 1.5 × max(theme estimate)` for the three lens reviewers (each priced at
+   `1.5 × max(theme estimate)`) + the repair round (`max(theme estimate)` for one theme
+   re-run plus a full re-review). The review's and the repair round's shares are held
    back from the budget while themes run, so a repair pass can never eat the money the
    merge gate needs.
 3. **At most one repair pass per theme, then stop.** A theme that fails twice (or once
@@ -31,9 +33,23 @@ after a review that cost $58.58. The workflow now prices and meters every launch
 4. **Every launch is metered against the ceiling** as it runs (not only at the start): a
    theme or the review that no longer fits the remaining budget is refused with reason
    `budget`, not launched and then left to overrun.
-5. **One independent whole-diff review** (`dynamic-fanout:reviewer`, read-only, 30 turns)
-   runs once at least one theme landed, over every commit the run made — not a second
-   fan-out, and not one of the implementers reviewing its own work.
+5. **A three-lens whole-diff review** (since 0.1.7): three `dynamic-fanout:reviewer`
+   agents (read-only, 30 turns) run in parallel once at least one theme landed, over every
+   commit the run made, each with one lens line: **A** boundaries and time,
+   **B** inputs and data, **C** privacy and test integrity. Each prints per-change verdicts,
+   `Regressions:`, `New risks:` and a last line `SAFE TO MERGE` / `NEEDS CHANGES`; the
+   merged verdict is `SAFE TO MERGE` only if all three are. An empty or unparsable lens
+   result retries that lens once; still empty, it counts as `NEEDS CHANGES`
+   ("review returned no text"), so an empty review never passes. A single whole-diff reviewer once
+   returned no text while three focused lenses over the same diff found 15 defects.
+   Optional `acceptanceCmd` (+ `acceptanceNote`): each lens may run it once, for example a
+   write-banned live re-render.
+5a. **One bounded repair round on `NEEDS CHANGES`.** The themes the lenses name
+   (`Themes to repair:`, or else their PARTIAL / NOT FIXED rows) re-run once, serially and
+   test-first, on their `fb` (or `p` when `fb` is null) with the lens findings; then one
+   re-review by only the lenses that said `NEEDS CHANGES`. No further rounds: `review.open`
+   reports what is still open. A theme that already used its theme-stage repair is not
+   re-run again (one re-route per unit).
 6. **One fresh session per theme** is still the right call for multi-theme work (for
    example the themes a review produced): this skill runs at `effort: max`, and one long
    session re-reads its growing context on every turn (the first run's master cost ~$78,
@@ -106,6 +122,8 @@ time the cap was too tight. Size the review budget for a whole PR, not for one c
     fb: { model?, effort } | null,    // the one repair cell, strictly stronger than p
   }],
   review: { enabled: true, cell: { model?, effort } },  // default W·min(high, refEffort)
+  acceptanceCmd: 'node render.js --dry',  // optional; each lens may run it once
+  acceptanceNote: 'write-banned live re-render',  // optional
   caps: { ceilingUsd: 15, pauseUsd: 10 },
   calib: { pm, scaleByRole },         // optional: the CALIB line from stats.mjs --summary,
                                       //   passed through to the pricing dry run
@@ -127,17 +145,19 @@ time the cap was too tight. Size the review budget for a whole PR, not for one c
   `files_changed`, `commit`, `summary`. `ok` needs `suite.failed === 0`; a `blocked`
   result naming `brief`/`access`/`scope` goes back to the master, never to `fb` (the
   repair cell would hit the same wall).
-- The review prompt carries the intended changes (theme id, outcome, first line of its
+- Each lens prompt carries its lens line, the intended changes (theme id, outcome, its
   brief) and the commit range, not the implementers' reasoning, so the reviewer judges
   the diff on its own terms. See `agents/reviewer.md` for what it checks and reports.
 
 ## RESULT
 
 ```js
-{ started: true, card, estimate: { units, review, total },
+{ started: true, card, estimate: { units, review, repair, total },
   money: { committedUsd, ceilingUsd },
   results: [{ id, attempts: [{ n, cell, kind, ok }], outcome, reason, result, warning }],
-  review: { ran: true, cell, range, text } | { ran: false, reason },
+  review: { ran: true, cell, range, verdict, lenses: [{ id, focus, verdict, note, launches, text }],
+            repair: { themes: [{ id, cell, ok }], skipped: [{ id, reason }], rereview } | null,
+            open, text } | { ran: false, reason },
   summary: { ok, repaired, failed, brief, refused }, warnings }
 ```
 `outcome` ∈ `ok | ok-repaired | failed | brief | refused`. `started: false` shapes mirror
@@ -146,8 +166,9 @@ the foreman's: `{ reason: 'rails'|'money'|'dryRun'|'pause'|'no-args', ... }`.
 ## Fallback: hand-written inline script
 
 The dedicated workflow covers the common shape (serial themes, one repair pass, one
-review). For a shape it does not fit — for example themes that must run in parallel
-worktrees, or a review gate that is not a single reviewer agent — the master may still
+three-lens review with one repair round). For a shape it does not fit — for example
+themes that must run in parallel worktrees, or a review gate that is not the three lens
+reviewers — the master may still
 write an inline Workflow script from the recipe above, using the same card format and
 rails, and call `workflow('dynamic-fanout:fanout', { ...args, kind: 'review', ... })` for
 its diff review (one nesting level is allowed). Reach for this only when

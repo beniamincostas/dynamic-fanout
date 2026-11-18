@@ -33,7 +33,7 @@ function responder(map = {}) {
   return (prompt, opts, n) => {
     const tag = tagOf(prompt)
     if (map[tag] !== undefined) return typeof map[tag] === 'function' ? map[tag](prompt, opts, n) : map[tag]
-    if (tag === 'review:1') return 't1 — FIXED\nSAFE TO MERGE'
+    if (/^review-[ABC]:\d+$/.test(tag)) return 't1 — FIXED\nSAFE TO MERGE'
     return green({ commit: `c-${tag}` })
   }
 }
@@ -117,7 +117,7 @@ test('pricing: the foreman gets one implement card per theme, dry run, ctx keep,
 
 // ───────────────────────── money: refusal, dry run, pause ─────────────────────────
 
-test('dryRun: returns the priced card and the estimate (units + 1.5x the largest unit for the review)', async () => {
+test('dryRun: returns the priced card and the estimate (units + 3 lenses x 1.5x the largest unit + the repair round)', async () => {
   const a = baseArgs({ dryRun: true, themes: [theme('t1', { in: 20000 }), theme('t2', { in: 60000 })] })
   const { res, calls } = await run(a)
   assert.equal(res.started, false)
@@ -127,11 +127,15 @@ test('dryRun: returns the priced card and the estimate (units + 1.5x the largest
   assert.ok(est.every(x => x > 0))
   const sum = est[0] + est[1]
   assert.ok(Math.abs(res.estimate.units - sum) < 1e-3)
-  assert.ok(Math.abs(res.estimate.review - 1.5 * Math.max(...est)) < 1e-3)
-  assert.ok(Math.abs(res.estimate.total - (sum + 1.5 * Math.max(...est))) < 1e-3)
-  // review disabled: no review stand-in
+  const lens = 1.5 * Math.max(...est)
+  assert.ok(Math.abs(res.estimate.review - 3 * lens) < 1e-3, 'three lens reviewers, each priced at 1.5x the largest theme')
+  // the repair round: one theme re-run plus a full re-review, held from the ceiling
+  assert.ok(Math.abs(res.estimate.repair - (Math.max(...est) + 3 * lens)) < 1e-3)
+  assert.ok(Math.abs(res.estimate.total - (sum + 3 * lens + Math.max(...est) + 3 * lens)) < 1e-3)
+  // review disabled: no review stand-in, no repair round
   const r2 = await run({ ...a, review: { enabled: false } })
   assert.equal(r2.res.estimate.review, 0)
+  assert.equal(r2.res.estimate.repair, 0)
 })
 
 test('money: an estimate above ceilingUsd is refused unstarted, with the card', async () => {
@@ -182,8 +186,12 @@ test('themes run serially in order, then one review on the reviewer agent', asyn
   assert.deepEqual(res.results[0].attempts, [{ n: 1, cell: 'opus·medium', kind: 'primary', ok: true }])
   assert.equal(calls.at(-1).opts.agentType, 'dynamic-fanout:reviewer')
   assert.equal(res.review.ran, true)
-  assert.equal(res.review.text, 't1 — FIXED\nSAFE TO MERGE')
+  assert.equal(res.review.verdict, 'SAFE TO MERGE')
+  assert.deepEqual(res.review.lenses.map(l => [l.id, l.verdict]), [['A', 'SAFE TO MERGE'], ['B', 'SAFE TO MERGE'], ['C', 'SAFE TO MERGE']])
+  assert.match(res.review.text, /\[lens A: boundaries and time\]\nt1 — FIXED/)
   assert.equal(res.review.range, 'c-t1^..HEAD')
+  assert.equal(res.review.repair, null, 'all SAFE: no repair round')
+  assert.deepEqual(res.review.open, [])
   const rp = calls.at(-1).prompt
   assert.match(rp, /git -C \/tmp\/work\/repo log --oneline c-t1\^\.\.HEAD/)
   assert.match(rp, /commits made in this run: c-t1, c-t2, c-t3/)
@@ -191,7 +199,7 @@ test('themes run serially in order, then one review on the reviewer agent', asyn
   // brief flags items 2..n as scope creep.
   for (const id of ['t1', 't2', 't3']) assert.ok(rp.includes(`- ${id} (ok): Fix ${id}: the first line of the brief more detail`), `intended change ${id} listed in full`)
   assert.ok(res.money.committedUsd <= res.money.ceilingUsd)
-  assert.ok(Math.abs(res.money.committedUsd - res.estimate.total) < 1e-3, 'no repair: committed = estimate')
+  assert.ok(Math.abs(res.money.committedUsd - (res.estimate.units + res.estimate.review)) < 1e-3, 'no repair: committed = themes + the three lenses')
 })
 
 test('implementer prompt: shared first, brief, fixed rules, cost tag on the last line', async () => {
@@ -307,7 +315,7 @@ test('ceiling: a launch that would exceed ceilingUsd is refused mid-run; the rev
   assert.equal(res.results[2].reason, 'budget')
   assert.deepEqual(res.results[2].attempts, [{ n: 1, cell: 'opus·medium', kind: 'primary', ok: false, refused: 'budget' }])
   assert.equal(res.review.ran, true)
-  assert.equal(reviewCalls(calls).length, 1)
+  assert.equal(reviewCalls(calls).length, 3)
   assert.ok(res.money.committedUsd <= ceilingUsd + 1e-9)
   assert.deepEqual(res.summary, { ok: 1, repaired: 1, failed: 0, brief: 0, refused: 1 })
 })
@@ -320,7 +328,7 @@ test('review: skipped when disabled; when it runs it lists failed themes too', a
   const rp = reviewCalls(r.calls)[0].prompt
   assert.match(rp, /- t1 \(failed\): Fix t1/)
   assert.match(rp, /- t2 \(ok\): Fix t2/)
-  assert.equal(rp.trim().split('\n').at(-1), '⟦df:review:1⟧')
+  assert.equal(rp.trim().split('\n').at(-1), '⟦df:review-A:1⟧')
 })
 
 test('review: without reported commits the reviewer is told to find them by prefix', async () => {
@@ -345,4 +353,141 @@ test('0.1.5 pricing: args.calib passes through to the foreman pricing call', asy
   assert.deepEqual(workflowCalls[0].args.calib, calib)
   const plain = await run(baseArgs({ dryRun: true }))
   assert.ok(!('calib' in plain.workflowCalls[0].args), 'no calib key without args.calib')
+})
+
+// ───────────────────────── 0.1.7: three-lens review + one repair round ─────────────────────────
+
+const SAFE = 't1 — FIXED — a.js:1 — test: x — ok\nRegressions: none found\nNew risks: none found\nSAFE TO MERGE'
+const lensTag = (l, n) => `review-${l}:${n}`
+
+test('0.1.7 review: three lens reviewers run in parallel, one lens line each; SAFE only if all three are SAFE', async () => {
+  let inFlight = 0
+  let maxInFlight = 0
+  const slow = text => async () => { inFlight++; maxInFlight = Math.max(maxInFlight, inFlight); await new Promise(r => setTimeout(r, 5)); inFlight--; return text }
+  const { res, calls } = await run(baseArgs({ themes: [theme('t1')] }), {
+    [lensTag('A', 1)]: slow(SAFE), [lensTag('B', 1)]: slow('t1 — PARTIAL — a.js:3 — test: none — rounding\nThemes to repair: none\nNEEDS CHANGES'), [lensTag('C', 1)]: slow(SAFE),
+  })
+  const rv = reviewCalls(calls)
+  assert.deepEqual(rv.map(c => tagOf(c.prompt)), ['review-A:1', 'review-B:1', 'review-C:1'])
+  assert.equal(maxInFlight, 3, 'the lenses run in parallel')
+  assert.match(rv[0].prompt, /Lens A, boundaries and time: timeouts, retries, the ordering of side effects, partial failure, concurrency, dates/)
+  assert.match(rv[1].prompt, /Lens B, inputs and data: unusual or malformed input, None\/null\/empty\/zero, encodings, rounding, multi-tenant data/)
+  assert.match(rv[2].prompt, /Lens C, privacy and test integrity: data reaching the wrong party; edited pre-existing tests, weakened or removed asserts, fixtures that only mirror the new code/)
+  for (const c of rv) {
+    assert.equal((c.prompt.match(/^Lens [ABC],/gm) || []).length, 1, 'exactly one lens line per reviewer')
+    assert.match(c.prompt, /SAFE TO MERGE or NEEDS CHANGES/)
+    assert.match(c.prompt, /Regressions/)
+    assert.equal(c.opts.agentType, 'dynamic-fanout:reviewer')
+  }
+  assert.equal(res.review.verdict, 'NEEDS CHANGES')
+  assert.deepEqual(res.review.lenses.map(l => l.verdict), ['SAFE TO MERGE', 'NEEDS CHANGES', 'SAFE TO MERGE'])
+  assert.ok(res.review.open.some(o => /^lens B \(inputs and data\): NEEDS CHANGES/.test(o)), res.review.open.join(' | '))
+  // a lens that names no theme: nothing to re-run, nothing re-reviewed, and the open list says so
+  assert.equal(implCalls(calls).length, 1)
+  assert.deepEqual(res.review.repair.themes, [])
+  assert.deepEqual(res.review.repair.rereview, [])
+  assert.ok(res.review.open.some(o => /no lens named a theme/.test(o)))
+})
+
+test('0.1.7 review: an empty or unparsable lens retries once; still empty counts as NEEDS CHANGES, never SAFE', async () => {
+  // A empty then SAFE; B unparsable (no verdict line) then SAFE; C empty twice
+  let r = await run(baseArgs({ themes: [theme('t1')] }), {
+    [lensTag('A', 1)]: '', [lensTag('A', 2)]: SAFE,
+    [lensTag('B', 1)]: 't1 — FIXED\nlooks fine to me', [lensTag('B', 2)]: SAFE,
+    [lensTag('C', 1)]: null, [lensTag('C', 2)]: '   ',
+  })
+  const tags = reviewCalls(r.calls).map(c => tagOf(c.prompt)).sort()
+  assert.deepEqual(tags, ['review-A:1', 'review-A:2', 'review-B:1', 'review-B:2', 'review-C:1', 'review-C:2'], 'one retry per lens, never two')
+  const [a, b, c] = r.res.review.lenses
+  assert.equal(a.verdict, 'SAFE TO MERGE')
+  assert.equal(b.verdict, 'SAFE TO MERGE')
+  assert.equal(c.verdict, 'NEEDS CHANGES')
+  assert.equal(c.note, 'review returned no text')
+  assert.equal(r.res.review.verdict, 'NEEDS CHANGES')
+  assert.ok(r.res.review.open.some(o => /lens C .*review returned no text/.test(o)))
+  // all three empty: the review never passes
+  r = await run(baseArgs({ themes: [theme('t1')] }), Object.fromEntries(['A', 'B', 'C'].flatMap(l => [[lensTag(l, 1), ''], [lensTag(l, 2), '']])))
+  assert.equal(r.res.review.verdict, 'NEEDS CHANGES')
+  assert.ok(r.res.review.lenses.every(l => l.note === 'review returned no text'))
+  // a verdict wrapped in markdown still parses
+  r = await run(baseArgs({ themes: [theme('t1')] }), { [lensTag('A', 1)]: 't1 — FIXED\n**SAFE TO MERGE**' })
+  assert.equal(r.res.review.lenses[0].verdict, 'SAFE TO MERGE')
+  assert.equal(reviewCalls(r.calls).length, 3, 'no retry for a parsable verdict')
+})
+
+test('0.1.7 review: acceptanceCmd (+ note) reaches every lens, run at most once; a malformed one is a rail', async () => {
+  const { calls } = await run(baseArgs({ themes: [theme('t1')], acceptanceCmd: 'node render.js --dry', acceptanceNote: 'write-banned live re-render' }))
+  for (const c of reviewCalls(calls)) {
+    assert.match(c.prompt, /Acceptance command \(run from the worktree, at most once\): node render\.js --dry \(write-banned live re-render\)/)
+  }
+  const plain = await run(baseArgs({ themes: [theme('t1')] }))
+  assert.doesNotMatch(reviewCalls(plain.calls)[0].prompt, /Acceptance command/)
+  for (const over of [{ acceptanceCmd: '' }, { acceptanceCmd: 3 }, { acceptanceCmd: 'x', acceptanceNote: 4 }]) {
+    const { res } = await run(baseArgs(over))
+    assert.equal(res.reason, 'rails')
+    assert.ok(res.errors.some(e => /^args: acceptance/.test(e)), res.errors.join(' | '))
+  }
+})
+
+test('0.1.7 repair round: named themes re-run once on fb (p when fb is null) with the findings, then one re-review by the NEEDS CHANGES lenses', async () => {
+  const a = baseArgs({ themes: [theme('t1'), theme('t2', { fb: null }), theme('t3')] })
+  const needA = 't1 — PARTIAL — a.js:9 — test: none — retry without backoff\nNew risks: none found\nThemes to repair: t1, t2\nNEEDS CHANGES'
+  const { res, calls } = await run(a, {
+    [lensTag('A', 1)]: needA, [lensTag('B', 1)]: SAFE, [lensTag('C', 1)]: 't3 — FIXED\nNEEDS CHANGES',
+    't1:2': green({ commit: 'r1' }), 't2:2': green({ commit: 'r2' }),
+    [lensTag('A', 2)]: SAFE, [lensTag('C', 2)]: SAFE,
+  })
+  const impl = implCalls(calls)
+  assert.deepEqual(impl.map(c => tagOf(c.prompt)), ['t1:1', 't2:1', 't3:1', 't1:2', 't2:2'], 'named themes only, serially, after the review')
+  assert.equal(impl[3].opts.effort, 'high', 't1 re-runs on its fb')
+  assert.equal(impl[4].opts.effort, 'medium', 't2 has fb null: it re-runs on p')
+  assert.match(impl[3].prompt, /Review repair/)
+  assert.match(impl[3].prompt, /retry without backoff/, 'the lens findings are embedded')
+  assert.match(impl[3].prompt, /failing test first/)
+  assert.equal(impl[3].prompt.trim().split('\n').at(-1), '⟦df:t1:2⟧')
+  // the re-review: only the lenses that said NEEDS CHANGES (A, C), once, with their earlier findings
+  const rv = reviewCalls(calls).map(c => tagOf(c.prompt))
+  assert.deepEqual(rv.slice(3).sort(), ['review-A:2', 'review-C:2'])
+  const reA = reviewCalls(calls).find(c => tagOf(c.prompt) === 'review-A:2').prompt
+  assert.match(reA, /Re-review after one repair round/)
+  assert.match(reA, /retry without backoff/)
+  assert.match(reA, /commits made in this run: c-t1:1, c-t2:1, c-t3:1, r1, r2/)
+  assert.equal(res.review.verdict, 'SAFE TO MERGE')
+  assert.deepEqual(res.review.repair.themes.map(t => [t.id, t.cell, t.ok]), [['t1', 'opus·high', true], ['t2', 'opus·medium', true]])
+  assert.deepEqual(res.review.repair.rereview, ['A', 'C'])
+  assert.deepEqual(res.review.open, [])
+  assert.deepEqual(res.results[0].attempts.at(-1), { n: 2, cell: 'opus·high', kind: 'review-repair', ok: true })
+})
+
+test('0.1.7 repair round: no further rounds; what is still open is reported; a theme already re-routed is not re-run', async () => {
+  const a = baseArgs({ themes: [theme('t1'), theme('t2')] })
+  const { res, calls } = await run(a, {
+    't2:1': red(), 't2:2': green({ commit: 'fx2' }), // t2 used its one re-route on the theme stage
+    [lensTag('A', 1)]: 't1 — NOT FIXED — a.js:1 — test: none — wrong\nt2 — PARTIAL — b.js:1 — test: none — half\nNEEDS CHANGES',
+    't1:2': red({ summary: 'still red' }),
+    [lensTag('A', 2)]: 't1 — NOT FIXED\nNEEDS CHANGES',
+  })
+  // without a "Themes to repair" line the PARTIAL / NOT FIXED rows name the themes
+  assert.deepEqual(implCalls(calls).map(c => tagOf(c.prompt)), ['t1:1', 't2:1', 't2:2', 't1:2'])
+  assert.deepEqual(reviewCalls(calls).map(c => tagOf(c.prompt)).sort(), ['review-A:1', 'review-A:2', 'review-B:1', 'review-C:1'], 'one re-review, never a third review round')
+  assert.equal(res.review.verdict, 'NEEDS CHANGES')
+  assert.deepEqual(res.review.repair.skipped, [{ id: 't2', reason: 'already re-routed once' }])
+  assert.ok(res.review.open.some(o => /^lens A .*NEEDS CHANGES/.test(o)))
+  assert.ok(res.review.open.some(o => /^theme t2: not re-run \(already re-routed once\)/.test(o)))
+  assert.ok(res.review.open.some(o => /^theme t1: review repair did not finish green/.test(o)))
+  assert.equal(res.results[0].outcome, 'ok', 'a red review repair keeps the theme\'s earlier landed result')
+  assert.equal(res.results[0].reviewRepair.summary, 'still red')
+})
+
+test('0.1.7 repair round: metered against the ceiling with the re-review held back', async () => {
+  const dry = (await run(baseArgs({ themes: [theme('t1')], dryRun: true }))).res
+  // just enough for the theme and the three lenses: the repair round does not fit
+  const ceilingUsd = dry.estimate.units + dry.estimate.review + dry.estimate.repair - 0.001
+  const r = await run(baseArgs({ themes: [theme('t1')], caps: { ceilingUsd }, confirmed: true }), { [lensTag('A', 1)]: 't1 — PARTIAL\nThemes to repair: t1\nNEEDS CHANGES' })
+  assert.equal(r.res.reason, 'money', 'the repair round is part of the estimate')
+  const ok = await run(baseArgs({ themes: [theme('t1')], caps: { ceilingUsd: dry.estimate.total + 0.001 } }), {
+    [lensTag('A', 1)]: 't1 — PARTIAL\nThemes to repair: t1\nNEEDS CHANGES', 't1:2': green({ commit: 'r1' }), [lensTag('A', 2)]: SAFE,
+  })
+  assert.equal(ok.res.review.verdict, 'SAFE TO MERGE')
+  assert.ok(ok.res.money.committedUsd <= dry.estimate.total + 1e-6)
 })
