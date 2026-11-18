@@ -2,11 +2,12 @@
 // stats.mjs — cross-run routing stats for dynamic-fanout. Sole writer of routing-stats.json.
 //
 // Usage:
-//   node scripts/stats.mjs update <workflow-output.json> [--file <stats.json>] [--kind <k>] [--verify <verify-stage-output.json>] [--ledger <ledger-cost.mjs --json output>]
+//   node scripts/stats.mjs update <workflow-output.json> [--file <stats.json>] [--kind <k>] [--also <verify-stage-output.json>]... [--ledger <ledger-cost.mjs --json output>]...
 //   node scripts/stats.mjs --summary <kind> [--file <stats.json>]
 //
 // Self-calibration (per role, keyed by price model): pass --ledger <ledger-cost.mjs --json
-// output>. Its `byKind` totals give each role's actual $ — work (unit attempts + the deep
+// output> (repeatable: several files are summed by kind, e.g. one per stage of a deep run).
+// Its `byKind` totals give each role's actual $ — work (unit attempts + the deep
 // completeness critic), sweep (gap-sweep rounds), verify (verifier batches), inspect
 // (inspector calls) — and the foreman's own workflow-output ledger gives each role's estimate.
 // ratio = actual/estimate, clamped to [0.1, 10]; used = card.calib.scaleByRole[role] (1 when
@@ -26,7 +27,15 @@
 //
 // Default file: $DYNAMIC_FANOUT_STATS, else ~/.claude/dynamic-fanout/routing-stats.json.
 // Cohort key: kind/role/D<d>V<v>B<b>T<t>/<cell of p>/<ctx>
-//   -> {n, firstPassOk, rerouted, refutedLater, ungroundedLater, unverified, conf:{hi:{n,ok}, lo:{n,ok}}, fb:{cell:n}}
+//   -> {n, firstPassOk, rerouted, refutedLater, ungroundedLater, unverified, conf:{hi:{n,ok}, lo:{n,ok}}, fb:{cell:n},
+//       q:{refuted, overstated, verifiedLower, gapUnits, gapsFound, gapReruns, covSum, covN}}
+// q (0.1.7) is the quality record from the audited output, counted per unit: refuted / overstated
+// = units with at least one REFUTED / OVERSTATED claim (merged duplicates included), verifiedLower
+// = units with a claim whose verifiedSeverity is below its derived severity; gapUnits = units the
+// outcome critic sent to a gap re-run (or would have), gapsFound = the gaps it named, gapReruns =
+// gap re-runs that launched; covSum/covN give the critic's mean coverage. --summary prints them
+// as a QUALITY table by role x cell, and PROMOTE QUALITY fires at n >= 4 when refuted+overstated
+// >= 25% or the gap rate >= 50%: start that cohort on its fb.
 // Every counter decays x0.9 before a run is added, so old runs fade.
 // Labels use the FINAL outcome: a unit that passed the gate but had a claim REFUTED later
 // counts against its primary cell (merged duplicates via mergedFrom included). A claim that
@@ -44,6 +53,9 @@
 // refutedLater/ungroundedLater need. Pass --verify <verify-stage-output.json> alongside the
 // work-stage <workflow-output.json> to merge the verify output's claim verdicts (by cid) into
 // the work output before labelling, so a deep run's claims are judged on their real outcome.
+// --also <verify-stage-output.json> (0.1.7, repeatable; --verify is its alias) also brings the
+// verify stage's verifier batches into the work ledger, so the verify role's estimate is
+// calibrated against the ledger's verifier actual too. The run id stays the work ledger's hash.
 //
 // The stats only inform the master's judgement; code never routes from them.
 // Probing (routing cheaper on purpose) is deferred to v0.2, so there is no probe rule.
@@ -59,6 +71,11 @@ export const DECAY = 0.9;
 export const MAX_RUNS = 50;
 export const CONF_HI = 0.7;
 export const RULES = { promoteN: 4, promoteBelow: 0.8, reserveN: 4, confMinN: 4, confGap: 0.1, envelope: 0.6, showN: 2 };
+// PROMOTE QUALITY (0.1.7): a role x cell with n >= promoteN whose refuted+overstated share or
+// gap rate reaches these should start on its fb.
+export const QUALITY = { promoteN: 4, refutedOverstated: 0.25, gapRate: 0.5 };
+// Keep equal to SEVERITIES in workflows/fanout.js.
+export const SEVERITIES = ['info', 'low', 'medium', 'high', 'blocker'];
 export const CALIB_ALPHA = 0.5;
 export const CALIB_MIN = 0.3;
 export const CALIB_MAX = 5;
@@ -128,6 +145,37 @@ export function mergeVerifyClaims(workResult, verifyResult) {
   return { ...workResult, results: { ...workResult?.results, claims } };
 }
 
+/**
+ * mergeVerifyClaims plus the verify stage's verifier batches appended to the work ledger, so a
+ * deep run's verify role has an estimate to calibrate against. Pure.
+ */
+export function mergeVerifyStage(workResult, verifyResult) {
+  const merged = mergeVerifyClaims(workResult, verifyResult);
+  const extra = Array.isArray(verifyResult?.ledger?.verifiers) ? verifyResult.ledger.verifiers : [];
+  if (!extra.length) return merged;
+  const own = Array.isArray(merged?.ledger?.verifiers) ? merged.ledger.verifiers : [];
+  return { ...merged, ledger: { ...merged.ledger, verifiers: [...own, ...extra] } };
+}
+
+/** Sum several ledger-cost --json outputs by kind (byKind) and tag (byTag). Pure. */
+export function mergeLedgerJsons(list) {
+  const docs = (Array.isArray(list) ? list : []).filter((d) => d && typeof d === 'object');
+  if (docs.length <= 1) return docs[0] ?? null;
+  const sumInto = (dst, src) => {
+    for (const [k, v] of Object.entries(src)) {
+      if (typeof v === 'number') dst[k] = (dst[k] ?? 0) + v;
+      else if (v && typeof v === 'object' && !Array.isArray(v)) sumInto((dst[k] ??= {}), v);
+    }
+    return dst;
+  };
+  const out = {};
+  for (const key of ['byKind', 'byTag']) {
+    const parts = docs.map((d) => d[key]).filter((x) => x && typeof x === 'object');
+    if (parts.length) out[key] = parts.reduce((acc, x) => sumInto(acc, x), {});
+  }
+  return out;
+}
+
 /** 'D2 A1 T1 C1 V0 B2 G2' -> 'D2V0B2T1' (missing features shown as '?'). */
 export function vecKey(vec) {
   const f = {};
@@ -148,7 +196,9 @@ export function cellOf(c, S) {
   return c.effort ? `${model}·${c.effort}` : model;
 }
 
-const newCohort = () => ({ n: 0, firstPassOk: 0, rerouted: 0, refutedLater: 0, ungroundedLater: 0, unverified: 0, conf: { hi: { n: 0, ok: 0 }, lo: { n: 0, ok: 0 } }, fb: {} });
+const newQuality = () => ({ refuted: 0, overstated: 0, verifiedLower: 0, gapUnits: 0, gapsFound: 0, gapReruns: 0, covSum: 0, covN: 0 });
+const newCohort = () => ({ n: 0, firstPassOk: 0, rerouted: 0, refutedLater: 0, ungroundedLater: 0, unverified: 0, conf: { hi: { n: 0, ok: 0 }, lo: { n: 0, ok: 0 } }, fb: {}, q: newQuality() });
+const sevRank = (s) => SEVERITIES.indexOf(s);
 
 /** Multiply every numeric counter in place (recursively). */
 export function decay(obj, f = DECAY) {
@@ -190,6 +240,9 @@ export function labelUnits(result, kindArg) {
   // a REFUTED verdict, so it needs its own signal: the gate passed on evidence that does not
   // actually ground the finding.
   const ungroundedUnits = new Set();
+  // Quality (0.1.7): real but overstated, and rated lower by verification than derived.
+  const overstatedUnits = new Set();
+  const lowerUnits = new Set();
   for (const c of claims) {
     const toUnits = (set) => {
       set.add(c.unit);
@@ -200,6 +253,8 @@ export function labelUnits(result, kindArg) {
     };
     if (c?.verdict === 'REFUTED') toUnits(refutedUnits);
     else if (c?.verdictBy === 'check-evidence' && c?.verdict === 'UNVERIFIED') toUnits(ungroundedUnits);
+    if (c?.verdict === 'OVERSTATED') toUnits(overstatedUnits);
+    if (c?.verifiedSeverity && sevRank(c.verifiedSeverity) >= 0 && sevRank(c.verifiedSeverity) < sevRank(c.severity)) toUnits(lowerUnits);
   }
   const out = [];
   for (const u of units) {
@@ -218,7 +273,15 @@ export function labelUnits(result, kindArg) {
     // so it says nothing about how well p's self-confidence predicts p's success.
     const confidence = rerouteLaunched(u) ? null : resUnits?.[u.id]?.confidence;
     const key = [kind, u.role ?? '?', vecKey(u.vec), cellOf(u.p, S), u.ctx ?? 'omit'].join('/');
-    out.push({ key, id: u.id, label, refuted, conf: typeof confidence === 'number' ? confidence : null, fbCell: u.fb ? cellOf(u.fb, S) : null });
+    const gapsFound = Number(u.gapsFound) || 0;
+    const quality = {
+      overstated: overstatedUnits.has(u.id),
+      verifiedLower: lowerUnits.has(u.id),
+      gapsFound,
+      gapRerun: Array.isArray(u.attempts) && u.attempts.some((a) => a && a.kind === 'gap' && a.cls !== 'refused'),
+      coverage: typeof u.critic?.coverage === 'number' ? u.critic.coverage : null,
+    };
+    out.push({ key, id: u.id, label, refuted, conf: typeof confidence === 'number' ? confidence : null, fbCell: u.fb ? cellOf(u.fb, S) : null, quality });
   }
   return { kind, labels: out };
 }
@@ -241,6 +304,14 @@ export function applyRun(stats, result, { kind: kindArg, runId, now = new Date()
       if (l.label === 'firstPassOk') b.ok += 1;
     }
     if (l.fbCell) c.fb[l.fbCell] = (c.fb[l.fbCell] ?? 0) + 1;
+    const q = (c.q ??= newQuality());   // cohorts stored before 0.1.7 have none
+    const lq = l.quality ?? {};
+    if (l.refuted) q.refuted += 1;
+    if (lq.overstated) q.overstated += 1;
+    if (lq.verifiedLower) q.verifiedLower += 1;
+    if (lq.gapsFound > 0) { q.gapUnits += 1; q.gapsFound += lq.gapsFound; }
+    if (lq.gapRerun) q.gapReruns += 1;
+    if (lq.coverage != null) { q.covSum += lq.coverage; q.covN += 1; }
   }
   const money = result?.digest?.money ?? {};
   stats.runs.push({
@@ -406,6 +477,31 @@ export function calibSkipReason(result, ledgerJson) {
 const pct = (a, b) => (b > 0 ? Math.round((100 * a) / b) : 0);
 const r1 = (x) => (Math.round(x * 10) / 10).toString();
 
+/**
+ * Quality rows for a kind, aggregated by role x cell over vec and ctx. Pure.
+ * @returns {Array<{role, cell, n, refuted, overstated, gapUnits, covSum, covN, fb}>} largest n first
+ */
+export function qualityRows(stats, kind) {
+  const prefix = `${kind}/`;
+  const rows = {};
+  for (const [k, c] of Object.entries(stats.cohorts)) {
+    if (!k.startsWith(prefix)) continue;
+    const parts = k.split('/');
+    const role = parts[1];
+    const cell = parts[3];
+    const r = (rows[`${role} ${cell}`] ??= { role, cell, n: 0, refuted: 0, overstated: 0, gapUnits: 0, covSum: 0, covN: 0, fb: {} });
+    const q = c.q ?? {};
+    r.n += c.n;
+    r.refuted += q.refuted ?? 0;
+    r.overstated += q.overstated ?? 0;
+    r.gapUnits += q.gapUnits ?? 0;
+    r.covSum += q.covSum ?? 0;
+    r.covN += q.covN ?? 0;
+    for (const [f, v] of Object.entries(c.fb ?? {})) r.fb[f] = (r.fb[f] ?? 0) + v;
+  }
+  return Object.values(rows).sort((a, b) => b.n - a.n);
+}
+
 /** Rule hits for a kind. Pure; returns structured hits for tests and the printer. */
 export function rules(stats, kind) {
   const prefix = `${kind}/`;
@@ -415,6 +511,15 @@ export function rules(stats, kind) {
     if (c.n >= RULES.promoteN && c.firstPassOk / c.n < RULES.promoteBelow) {
       const usual = Object.entries(c.fb ?? {}).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
       hits.push({ rule: 'PROMOTE', cohort: k, n: c.n, firstPass: c.firstPassOk / c.n, fb: usual });
+    }
+  }
+  for (const r of qualityRows(stats, kind)) {
+    if (r.n < QUALITY.promoteN) continue;
+    const badRate = (r.refuted + r.overstated) / r.n;
+    const gapRate = r.gapUnits / r.n;
+    if (badRate >= QUALITY.refutedOverstated || gapRate >= QUALITY.gapRate) {
+      const usual = Object.entries(r.fb).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+      hits.push({ rule: 'PROMOTE QUALITY', role: r.role, cell: r.cell, n: r.n, badRate, gapRate, fb: usual });
     }
   }
   const byRole = {};
@@ -458,34 +563,44 @@ export function summary(stats, kind, maxLines = 40) {
     if (h.rule === 'PROMOTE') ruleLines.push(`PROMOTE ${h.cohort}: n=${r1(h.n)} first-pass ${pct(h.firstPass, 1)}% < 80% -> start at its usual fb ${h.fb ?? '(none recorded)'}; pick a new fb or null`);
     if (h.rule === 'RESERVE PRIOR') ruleLines.push(`RESERVE PRIOR role=${h.role}: n=${r1(h.n)} -> caps.rerouteRate ${h.rate.toFixed(2)}`);
     if (h.rule === 'CONFIDENCE') ruleLines.push(`CONFIDENCE: hi ok ${pct(h.hiRate, 1)}% vs lo ok ${pct(h.loRate, 1)}% (gap <10 pts) -> drop self-confidence as a sort key`);
+    if (h.rule === 'PROMOTE QUALITY') ruleLines.push(`PROMOTE QUALITY role=${h.role} cell=${h.cell}: n=${r1(h.n)} refuted+overstated ${pct(h.badRate, 1)}%, gap ${pct(h.gapRate, 1)}% -> start this cohort on its fb ${h.fb ?? '(none recorded)'}`);
     if (h.rule === 'ENVELOPE') ruleLines.push(`ENVELOPE: last ${kind} run committed $${h.committedUsd.toFixed(2)} = ${h.ratio.toFixed(2)}·U > 0.6·U -> solo thresholds x1.5`);
   }
-  const budget = maxLines - lines.length - 2 - ruleLines.length;
+  // QUALITY table (0.1.7): at most 8 role x cell rows, n >= showN.
+  const qRows = qualityRows(stats, kind).filter((r) => r.n >= RULES.showN);
+  const qLines = [];
+  if (qRows.length) {
+    qLines.push('QUALITY (role x cell)  n  refuted%  overstated%  gap%  coverage');
+    for (const r of qRows.slice(0, 8)) qLines.push(`  ${r.role}  ${r.cell}  n=${r1(r.n)}  ${pct(r.refuted, r.n)}%  ${pct(r.overstated, r.n)}%  ${pct(r.gapUnits, r.n)}%  ${r.covN > 0 ? (r.covSum / r.covN).toFixed(2) : '-'}`);
+    if (qRows.length > 8) qLines.push(`  ... ${qRows.length - 8} more role x cell row(s)`);
+  }
+  const budget = maxLines - lines.length - 2 - ruleLines.length - qLines.length;
   if (rows.length) lines.push('cohort (kind/role/vec/cell/ctx)  n  first-pass%  reroute%');
   const shown = rows.slice(0, Math.max(0, budget - 1));
   for (const [k, c] of shown) lines.push(`  ${k.slice(prefix.length)}  n=${r1(c.n)}  ${pct(c.firstPassOk, c.n)}%  ${pct(c.rerouted, c.n)}%`);
   if (rows.length > shown.length) lines.push(`  ... ${rows.length - shown.length} more cohort(s)`);
+  lines.push(...qLines);
   lines.push(ruleLines.length ? 'rules:' : 'rules: none fire');
   lines.push(...ruleLines);
   return lines.slice(0, maxLines).join('\n');
 }
 
 function parseArgs(argv) {
-  const a = { cmd: null, input: null, file: null, kind: null, verify: null, ledger: null };
+  const a = { cmd: null, input: null, file: null, kind: null, also: [], ledgers: [] };
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === 'update') { a.cmd = 'update'; a.input = argv[++i]; }
     else if (t === '--summary') { a.cmd = 'summary'; a.kind = argv[++i]; }
     else if (t === '--file') a.file = argv[++i];
     else if (t === '--kind') a.kind = argv[++i];
-    else if (t === '--verify') a.verify = argv[++i];
-    else if (t === '--ledger') a.ledger = argv[++i];
+    else if (t === '--also' || t === '--verify') a.also.push(argv[++i]);
+    else if (t === '--ledger') a.ledgers.push(argv[++i]);
     else if (t === '-h' || t === '--help') a.cmd = 'help';
   }
   return a;
 }
 
-const USAGE = 'usage: node scripts/stats.mjs update <workflow-output.json> [--file <stats.json>] [--kind <k>] [--verify <verify-stage-output.json>] [--ledger <ledger-cost.mjs --json output>]\n       node scripts/stats.mjs --summary <kind> [--file <stats.json>]';
+const USAGE = 'usage: node scripts/stats.mjs update <workflow-output.json> [--file <stats.json>] [--kind <k>] [--also <verify-stage-output.json>]... [--ledger <ledger-cost.mjs --json output>]...\n       node scripts/stats.mjs --summary <kind> [--file <stats.json>]';
 
 export function main(argv = process.argv.slice(2), env = process.env) {
   const a = parseArgs(argv);
@@ -516,18 +631,21 @@ export function main(argv = process.argv.slice(2), env = process.env) {
       console.error(`stats: the run did not start (${result.reason ?? 'unknown'}); nothing recorded`);
       return 2;
     }
-    if (a.verify) {
+    // The same output folded twice would double-count; key runs by the work ledger's hash
+    // (taken before --also adds verifier batches, so a later re-fold is still recognised).
+    const workLedger = JSON.stringify(result?.ledger ?? null);
+    for (const f of a.also) {
       let verifyRaw;
-      try { verifyRaw = fs.readFileSync(a.verify, 'utf8'); } catch (e) {
-        console.error(`stats: cannot read ${a.verify}: ${e.message}`);
+      try { verifyRaw = fs.readFileSync(f, 'utf8'); } catch (e) {
+        console.error(`stats: cannot read ${f}: ${e.message}`);
         return 2;
       }
       let verifyResult;
       try { verifyResult = unwrap(JSON.parse(verifyRaw)); } catch (e) {
-        console.error(`stats: ${a.verify} is not JSON: ${e.message}`);
+        console.error(`stats: ${f} is not JSON: ${e.message}`);
         return 2;
       }
-      result = mergeVerifyClaims(result, verifyResult);
+      result = mergeVerifyStage(result, verifyResult);
     }
     if (!Array.isArray(result?.ledger?.units)) {
       console.error('stats: no ledger.units in the workflow output; nothing recorded');
@@ -538,20 +656,20 @@ export function main(argv = process.argv.slice(2), env = process.env) {
       console.log('stats: no units ran p in this output (verify-only stage, or every unit refused); nothing recorded');
       return 0;
     }
-    let ledgerJson = null;
-    if (a.ledger) {
+    const ledgerDocs = [];
+    for (const f of a.ledgers) {
       let ledgerRaw;
-      try { ledgerRaw = fs.readFileSync(a.ledger, 'utf8'); } catch (e) {
-        console.error(`stats: cannot read ${a.ledger}: ${e.message}`);
+      try { ledgerRaw = fs.readFileSync(f, 'utf8'); } catch (e) {
+        console.error(`stats: cannot read ${f}: ${e.message}`);
         return 2;
       }
-      try { ledgerJson = JSON.parse(ledgerRaw); } catch (e) {
-        console.error(`stats: ${a.ledger} is not JSON: ${e.message}`);
+      try { ledgerDocs.push(JSON.parse(ledgerRaw)); } catch (e) {
+        console.error(`stats: ${f} is not JSON: ${e.message}`);
         return 2;
       }
     }
-    // The same output folded twice would double-count; key runs by content hash.
-    const runId = crypto.createHash('sha256').update(JSON.stringify(result.ledger)).digest('hex').slice(0, 16);
+    const ledgerJson = ledgerDocs.length ? mergeLedgerJsons(ledgerDocs) : null;
+    const runId = crypto.createHash('sha256').update(workLedger).digest('hex').slice(0, 16);
     const stats = loadStats(file);
     if (stats.runs.some((r) => r.id === runId)) {
       console.log(`stats: run ${runId} already recorded in ${file}; skipped`);
