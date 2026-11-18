@@ -1134,27 +1134,7 @@ test('0.1.5: implementers price as their own role', () => {
 
 // ───────────────────────── 0.1.5 t2: severity calibration, findings cap ─────────────────────────
 
-test('0.1.5: the severity rubric is in the unit, sweep and skeptic prompts', async () => {
-  assert.match(core.SEVERITY_RUBRIC, /blocker = /)
-  assert.match(core.SEVERITY_RUBRIC, /Rate by what the code does today, not the worst imaginable case; most findings are medium or low\./)
-  assert.ok(core.RULES.includes(core.SEVERITY_RUBRIC), 'RULES carries the rubric')
-  assert.ok(core.SKEPTIC_RULES.includes(core.SEVERITY_RUBRIC), 'SKEPTIC_RULES carries the rubric')
-  const { calls } = await runFanout(baseArgs({ sweep: { rounds: 1 } }), responder({
-    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [finding('src/a.py', 3, 'high')] }),
-  }))
-  const unitCall = calls.find(c => tagOf(c.prompt) === 'u1:1')
-  const sweepCall = calls.find(c => tagOf(c.prompt).startsWith('s:'))
-  const skepCall = calls.find(c => tagOf(c.prompt).startsWith('v:'))
-  for (const [name, c] of [['unit', unitCall], ['sweep', sweepCall], ['skeptic', skepCall]]) {
-    assert.ok(c, `${name} call ran`)
-    assert.ok(c.prompt.includes(core.SEVERITY_RUBRIC), `${name} prompt carries the rubric`)
-  }
-  assert.match(core.SKEPTIC_RULES, /For every claim you check, state your own severity rating/)
-})
-
-test('0.1.5: VERDICT requires severity; the findings cap is 15', () => {
-  const item = core.VERDICT.properties.verdicts.items
-  assert.ok(item.required.includes('severity'))
+test('0.1.5: the findings cap is 15', () => {
   assert.equal(core.UNIT_RESULT.properties.findings.maxItems, 15)
   assert.equal(core.MAX_INSPECT_QUOTES, 60)
   assert.equal(core.calibrate().mediumsPerUnit, 5)
@@ -1167,11 +1147,11 @@ test('0.1.5: verifiedSeverity is always stored and drives digest ordering', asyn
     'u1:1': okUnit({ files_read: ['src/a.py'], findings: fs }),
     'u2:1': okUnit({ files_read: ['src/b.py'], findings: [finding('src/b.py', 2, 'medium', 'other')] }),
   })
-  // The skeptic downgrades the high claim t0 to low and states no severity for the rest.
+  // The skeptic re-rates the high claim t0 to misconfig x wrong_outcome (low) and states no pair for the rest.
   const { res } = await runFanout(baseArgs(), (prompt, o, n) => {
     if (!tagOf(prompt).startsWith('v:')) return base(prompt, o, n)
     const r = verdictAll(prompt, 'CONFIRMED')
-    for (const v of r.verdicts) if (prompt.includes(`${v.cid} | high | t0`)) v.severity = 'low'
+    for (const v of r.verdicts) if (prompt.includes(`${v.cid} | high | t0`)) Object.assign(v, { trigger: 'misconfig', impact: 'wrong_outcome' })
     return r
   })
   const verified = res.results.claims.filter(c => c.verdict && c.verdict !== 'PENDING' && c.verdict !== 'UNVERIFIED' && c.rung && c.rung !== 'V0' && c.rung !== 'V1')
@@ -1180,7 +1160,7 @@ test('0.1.5: verifiedSeverity is always stored and drives digest ordering', asyn
   const t0 = res.results.claims.find(c => c.title === 't0')
   assert.equal(t0.severity, 'high', 'the filed severity is kept')
   assert.equal(t0.verifiedSeverity, 'low')
-  assert.equal(t0.rung, 'V3', 'the rung is chosen from the filed severity')
+  assert.equal(t0.rung, 'V3', 'the rung is chosen from the producer\'s severity')
   assert.notEqual(res.digest.top[0].title, 't0', 'top orders by verifiedSeverity')
   assert.equal(res.results.claims.filter(c => c.unit === 'u1').length, 15, 'a 15-finding unit is accepted whole')
 })
@@ -1380,4 +1360,91 @@ test('0.1.7: an overstated flag bumps the finding one rung and its note reaches 
   const skeptic = flagged.calls.find(c => tagOf(c.prompt).startsWith('v:') && c.prompt.includes('u1.f1 |'))
   assert.match(skeptic.prompt, /a reviewer thinks this may be overstated because only reachable from tests/)
   assert.equal(flagged.res.results.claims.find(c => c.cid === 'u1.f1').criticNote, 'only reachable from tests')
+})
+
+// ───────────────────────── 0.1.7 t2: OVERSTATED verdict, calibrated severity ─────────────────────────
+
+const tf = (file, line, trigger, impact, title = 'issue', extra = {}) => ({ title, trigger, impact, claim: `${title} in ${file}`, evidence: [{ file, line, quote: 'x = 1' }], ...extra })
+
+test('0.1.7: SEVERITY_MATRIX maps trigger x impact to severity', () => {
+  const M = core.SEVERITY_MATRIX
+  assert.deepEqual(M.customer_money_legal, { normal: 'blocker', edge: 'high', misconfig: 'medium', theoretical: 'low' })
+  assert.deepEqual(M.wrong_outcome, { normal: 'high', edge: 'medium', misconfig: 'low', theoretical: 'low' })
+  assert.deepEqual(M.operational, { normal: 'medium', edge: 'low', misconfig: 'low', theoretical: 'info' })
+  assert.deepEqual(M.cosmetic, { normal: 'low', edge: 'info', misconfig: 'info', theoretical: 'info' })
+  assert.equal(core.deriveSeverity({ trigger: 'edge', impact: 'wrong_outcome', severity: 'blocker' }), 'medium', 'the matrix wins over a filed label')
+  assert.equal(core.deriveSeverity({ severity: 'high' }), 'high', 'without a valid pair the filed severity is kept')
+  assert.equal(core.deriveSeverity({ trigger: 'edge' }), 'medium')
+})
+
+test('0.1.7: UNIT_RESULT requires trigger and impact (severity optional); VERDICT adds OVERSTATED', () => {
+  const it = core.UNIT_RESULT.properties.findings.items
+  assert.ok(it.required.includes('trigger') && it.required.includes('impact'))
+  assert.ok(!it.required.includes('severity'), 'severity is optional')
+  assert.deepEqual(it.properties.trigger.enum, ['normal', 'edge', 'misconfig', 'theoretical'])
+  assert.deepEqual(it.properties.impact.enum, ['customer_money_legal', 'wrong_outcome', 'operational', 'cosmetic'])
+  const v = core.VERDICT.properties.verdicts.items
+  assert.ok(v.properties.verdict.enum.includes('OVERSTATED'))
+  assert.ok(v.required.includes('trigger') && v.required.includes('impact'))
+  assert.ok(!v.required.includes('severity'))
+})
+
+test('0.1.7: the foreman derives severity from trigger x impact, keeps filedSeverity and picks the rung from it', async () => {
+  const { res, calls } = await runFanout(baseArgs(), responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [
+      tf('src/a.py', 3, 'normal', 'customer_money_legal', 'money', { severity: 'low' }),
+      tf('src/a.py', 9, 'theoretical', 'operational', 'theory', { severity: 'blocker' }),
+    ] }),
+  }))
+  const by = t => res.results.claims.find(c => c.title === t)
+  assert.deepEqual([by('money').severity, by('money').filedSeverity, by('money').trigger, by('money').impact], ['blocker', 'low', 'normal', 'customer_money_legal'])
+  assert.equal(by('money').rung, 'V3', 'rung from the derived severity')
+  assert.deepEqual([by('theory').severity, by('theory').filedSeverity, by('theory').rung], ['info', 'blocker', 'V0'])
+  const skep = calls.find(c => tagOf(c.prompt).startsWith('v:'))
+  assert.match(skep.prompt, /filed trigger: normal, impact: customer_money_legal/)
+})
+
+test('0.1.7: the prompts explain trigger and impact one line each, replacing the free rubric', async () => {
+  assert.match(core.SEVERITY_RUBRIC, /^- trigger: normal = /m)
+  assert.match(core.SEVERITY_RUBRIC, /^- impact: customer_money_legal = /m)
+  assert.doesNotMatch(core.SEVERITY_RUBRIC, /blocker = /)
+  assert.ok(core.RULES.includes(core.SEVERITY_RUBRIC))
+  assert.ok(core.SKEPTIC_RULES.includes(core.SEVERITY_RUBRIC))
+  assert.match(core.SKEPTIC_RULES, /- OVERSTATED: /)
+  assert.match(core.SKEPTIC_RULES, /- REFUTED: .*evidence shows the claim is false/)
+  assert.match(core.SKEPTIC_RULES, /state your own trigger and impact/)
+  const { calls } = await runFanout(baseArgs({ sweep: { rounds: 1 } }), responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'normal', 'wrong_outcome')] }),
+  }))
+  for (const pre of ['u1:1', 's:', 'v:']) {
+    const c = calls.find(x => tagOf(x.prompt).startsWith(pre))
+    assert.ok(c && c.prompt.includes(core.SEVERITY_RUBRIC), `${pre} prompt carries trigger and impact`)
+  }
+})
+
+test('0.1.7: OVERSTATED needs support and a corrected trigger/impact, else PLAUSIBLE', () => {
+  const ok = { verdict: 'OVERSTATED', reason: 'r', support_cmd: 'grep -n x', trigger: 'edge', impact: 'operational' }
+  assert.equal(core.normalizeVerdict(ok).verdict, 'OVERSTATED')
+  assert.equal(core.normalizeVerdict({ ...ok, support_cmd: undefined }).verdict, 'PLAUSIBLE', 'no support')
+  assert.equal(core.normalizeVerdict({ ...ok, trigger: undefined }).verdict, 'PLAUSIBLE', 'no corrected trigger')
+  const m = core.mergeVerdicts([{ verdict: 'CONFIRMED', reason: 'a', support_cmd: 'g' }, { ...ok, reason: 'b' }])
+  assert.equal(m.verdict, 'OVERSTATED', 'confirmed + overstated: real, but overstated')
+})
+
+test('0.1.7: an OVERSTATED claim counts as real, not refuted; verifiedSeverity comes from the skeptic trigger/impact', async () => {
+  const base = responder({
+    'u1:1': okUnit({ files_read: ['src/a.py'], findings: [tf('src/a.py', 3, 'normal', 'wrong_outcome', 'big')] }),
+    'u2:1': okUnit({ files_read: ['src/b.py'], findings: [tf('src/b.py', 4, 'normal', 'wrong_outcome', 'other')] }),
+  })
+  const { res } = await runFanout(baseArgs(), (prompt, o, n) => {
+    if (!tagOf(prompt).startsWith('v:')) return base(prompt, o, n)
+    if (prompt.includes('| big')) return verdictAll(prompt, 'OVERSTATED', { support_cmd: 'grep -n x', trigger: 'misconfig', impact: 'wrong_outcome' })
+    return verdictAll(prompt, 'CONFIRMED', { trigger: 'normal', impact: 'wrong_outcome' })
+  })
+  const big = res.results.claims.find(c => c.title === 'big')
+  assert.equal(big.verdict, 'OVERSTATED')
+  assert.deepEqual([big.severity, big.verifiedSeverity, big.verifiedTrigger, big.verifiedImpact], ['high', 'low', 'misconfig', 'wrong_outcome'])
+  assert.equal(res.digest.counts.overstated, 1)
+  assert.equal(res.digest.counts.refuted, 0)
+  assert.equal(res.digest.counts.confirmed, 1)
 })

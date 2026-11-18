@@ -28,6 +28,20 @@ const LENSES = {
 const DEPTHS = ['quick', 'standard', 'deep']
 const STAGES = ['all', 'work', 'verify']
 const SEVERITIES = ['info', 'low', 'medium', 'high', 'blocker']
+// Calibrated severity (0.1.7): a free severity label did not calibrate (a blind audit found 60%
+// filed too high, often by two levels), so producers and skeptics name a trigger and an impact
+// and the foreman derives severity from them by this matrix.
+const TRIGGERS = ['normal', 'edge', 'misconfig', 'theoretical']
+const IMPACTS = ['customer_money_legal', 'wrong_outcome', 'operational', 'cosmetic']
+const SEVERITY_MATRIX = {
+  customer_money_legal: { normal: 'blocker', edge: 'high', misconfig: 'medium', theoretical: 'low' },
+  wrong_outcome: { normal: 'high', edge: 'medium', misconfig: 'low', theoretical: 'low' },
+  operational: { normal: 'medium', edge: 'low', misconfig: 'low', theoretical: 'info' },
+  cosmetic: { normal: 'low', edge: 'info', misconfig: 'info', theoretical: 'info' },
+}
+// OVERSTATED = real, but the trigger, scope or impact is overstated: it counts as a real finding.
+// REFUTED is reserved for claims the evidence shows false (counter_quote).
+const VERDICTS = ['CONFIRMED', 'OVERSTATED', 'REFUTED', 'PLAUSIBLE', 'UNVERIFIABLE']
 const RUNGS = ['V0', 'V1', 'V2', 'V3', 'V4']
 const FEATURES = ['D', 'A', 'T', 'C', 'V', 'B', 'G']
 const BRIEF_REASONS = ['no_access', 'ambiguous_brief', 'out_of_scope']
@@ -96,6 +110,14 @@ const DEFAULT_CALIB = {
 const mr = m => MODELS.indexOf(m)
 const er = e => EFFORTS.indexOf(e)
 const sevRank = s => { const i = SEVERITIES.indexOf(s); return i < 0 ? 0 : i }
+// The matrix severity of a valid trigger x impact pair, else a valid filed severity, else null.
+const ratedSeverity = x => (x && SEVERITY_MATRIX[x.impact] && SEVERITY_MATRIX[x.impact][x.trigger]) || (x && SEVERITIES.includes(x.severity) ? x.severity : null)
+const deriveSeverity = f => ratedSeverity(f) || 'medium'
+// A finding's calibrated fields: derived severity, the producer's own label (if any), the pair.
+const calibrated = f => ({
+  severity: deriveSeverity(f), filedSeverity: SEVERITIES.includes(f.severity) ? f.severity : null,
+  trigger: TRIGGERS.includes(f.trigger) ? f.trigger : null, impact: IMPACTS.includes(f.impact) ? f.impact : null,
+})
 const round2 = x => Math.round(x * 100) / 100
 const round4 = x => Math.round(x * 10000) / 10000
 const minEffort = (want, cap) => (er(cap) >= 0 && er(want) > er(cap) ? cap : want)
@@ -794,7 +816,7 @@ function dedupClaims(claims, keys) {
     if (!g) { out.push(c); continue }
     // Keep every merged claim's own title, so a wrong merge stays visible in the report.
     g.merged = (g.merged || []).concat({ cid: c.cid, unit: c.unit || null, title: c.title })
-    if (sevRank(c.severity) > sevRank(g.severity)) { g.severity = c.severity; g.title = c.title; g.claim = c.claim }
+    if (sevRank(c.severity) > sevRank(g.severity)) Object.assign(g, { severity: c.severity, filedSeverity: c.filedSeverity || null, trigger: c.trigger || null, impact: c.impact || null, title: c.title, claim: c.claim })
     for (const e of c.evidence || []) if (!g.evidence.some(x => normPath(x.file) === normPath(e.file) && Number(x.line) === Number(e.line))) g.evidence.push(e)
     g.mergedFrom = (g.mergedFrom || []).concat(c.cid)
     g.parity = g.parity || c.parity
@@ -820,15 +842,20 @@ function rungFor(c, rungs) {
   return RUNGS[Math.min(4, Math.max(0, r))]
 }
 
-// A CONFIRMED verdict must carry the skeptic's own support: a verbatim quote it found
-// (support) or, for an absence claim, the empty search it ran (support_cmd). Without
-// either it is kept as PLAUSIBLE — a skeptic's say-so is not confirmation.
+// A CONFIRMED or OVERSTATED verdict must carry the skeptic's own support: a verbatim quote it
+// found (support) or, for an absence claim, the empty search it ran (support_cmd). Without
+// either it is kept as PLAUSIBLE — a skeptic's say-so is not confirmation. OVERSTATED also
+// needs the corrected trigger and impact (a valid pair), else it is kept as PLAUSIBLE.
 function requireSupport(v) {
-  if (!v || v.verdict !== 'CONFIRMED') return v
+  if (!v || (v.verdict !== 'CONFIRMED' && v.verdict !== 'OVERSTATED')) return v
   const quoted = v.support && v.support.file && v.support.quote
   const cmd = typeof v.support_cmd === 'string' && v.support_cmd.trim()
-  if (quoted || cmd) return v
-  return { ...v, verdict: 'PLAUSIBLE', reason: `confirmed without own support: ${v.reason || ''}`.trim() }
+  const word = v.verdict === 'CONFIRMED' ? 'confirmed' : 'overstated'
+  if (!quoted && !cmd) return { ...v, verdict: 'PLAUSIBLE', reason: `${word} without own support: ${v.reason || ''}`.trim() }
+  if (v.verdict === 'OVERSTATED' && !(SEVERITY_MATRIX[v.impact] && SEVERITY_MATRIX[v.impact][v.trigger])) {
+    return { ...v, verdict: 'PLAUSIBLE', reason: `overstated without a corrected trigger/impact: ${v.reason || ''}`.trim() }
+  }
+  return v
 }
 
 function mergeVerdicts(list) {
@@ -838,6 +865,10 @@ function mergeVerdicts(list) {
   const kinds = new Set(vs.map(v => v.verdict))
   if (kinds.size === 1) return { ...vs[0], reason: vs.map(v => v.reason).filter(Boolean).join(' / ').slice(0, 600) }
   if (kinds.has('REFUTED')) return { verdict: 'UNVERIFIED', reason: `split panel: ${vs.map(v => v.verdict).join(' vs ')} — master spot-read`, split: true }
+  // Both lenses say real; one says overstated: keep the overstated verdict and its support.
+  if (kinds.has('CONFIRMED') && kinds.has('OVERSTATED') && kinds.size === 2) {
+    return { ...vs.find(v => v.verdict === 'OVERSTATED'), reason: vs.map(v => v.reason).filter(Boolean).join(' / ').slice(0, 600) }
+  }
   if (kinds.has('CONFIRMED') && kinds.has('PLAUSIBLE') && kinds.size === 2) {
     const unsupported = vs.some(v => (v.reason || '').startsWith('confirmed without own support'))
     return { verdict: 'PLAUSIBLE', reason: `panel: one lens could not fully confirm${unsupported ? ' (confirmed without own support)' : ''}` }
@@ -906,11 +937,13 @@ const UNIT_RESULT = {
         type: 'object',
         properties: {
           title: { type: 'string', maxLength: 160 },
+          trigger: { type: 'string', enum: TRIGGERS },
+          impact: { type: 'string', enum: IMPACTS },
           severity: { type: 'string', enum: SEVERITIES },
           claim: { type: 'string', maxLength: 300 },
           evidence: { type: 'array', items: EVIDENCE, maxItems: 4 },
         },
-        required: ['title', 'severity', 'claim', 'evidence'],
+        required: ['title', 'trigger', 'impact', 'claim', 'evidence'],
       },
     },
     numbers: {
@@ -951,14 +984,15 @@ const VERDICT = {
         type: 'object',
         properties: {
           cid: { type: 'string' },
-          verdict: { type: 'string', enum: ['CONFIRMED', 'REFUTED', 'PLAUSIBLE', 'UNVERIFIABLE'] },
+          verdict: { type: 'string', enum: VERDICTS },
           reason: { type: 'string', maxLength: 300 },
-          severity: { type: 'string', enum: SEVERITIES },
+          trigger: { type: 'string', enum: TRIGGERS },
+          impact: { type: 'string', enum: IMPACTS },
           counter_quote: EVIDENCE,
           support: EVIDENCE,
           support_cmd: { type: 'string', maxLength: 200 },
         },
-        required: ['cid', 'verdict', 'reason', 'severity'],
+        required: ['cid', 'verdict', 'reason', 'trigger', 'impact'],
       },
     },
   },
@@ -1006,16 +1040,13 @@ function unitSchema(u) {
   return s
 }
 
-// One severity scale for producers and skeptics. A blind audit found 61% of findings filed too
-// high (often by two levels), so the rubric anchors each level to what the code does today.
+// One scale for producers and skeptics (0.1.7): a trigger and an impact per finding; the foreman
+// derives severity from them (SEVERITY_MATRIX). A free severity label did not calibrate.
 const SEVERITY_RUBRIC = [
-  'Severity:',
-  '- blocker = wrong customer-facing money or legal action, or data loss, in normal operation.',
-  '- high = a wrong outcome is likely in realistic cases.',
-  '- medium = edge cases, or a real operational risk.',
-  '- low = minor.',
-  '- info = an observation.',
-  'Rate by what the code does today, not the worst imaginable case; most findings are medium or low.',
+  'Trigger and impact (the foreman derives severity from them; you need not file one):',
+  '- trigger: normal = happens in normal operation | edge = only in realistic edge cases | misconfig = only with a wrong configuration or misuse | theoretical = no realistic path today.',
+  '- impact: customer_money_legal = wrong customer-facing money or legal action, or data loss | wrong_outcome = a wrong result or decision | operational = an operational risk, cost or slowdown | cosmetic = no effect on results.',
+  'Rate by what the code does today, not the worst imaginable case.',
 ].join('\n')
 
 const RULES = [
@@ -1045,11 +1076,12 @@ const INSPECT_RULES = [
 const SKEPTIC_RULES = [
   'You are an independent skeptic. For each claim decide:',
   '- CONFIRMED: you verified it yourself in the files or data, and you give your own support: support {file, line, quote} = a verbatim quote you found that shows the claimed behaviour (prefer a line other than the producer\'s evidence), or, for a claim that something is absent, support_cmd = the exact search you ran that came back empty. Without support, use PLAUSIBLE.',
-  '- REFUTED: you found concrete counter-evidence; give counter_quote {file, line, quote}. No counter-evidence means not refuted.',
+  '- OVERSTATED: the claim is real, but its trigger, scope or impact is overstated. Give support as for CONFIRMED and the corrected trigger and impact. It counts as a real finding.',
+  '- REFUTED: only when the evidence shows the claim is false; give counter_quote {file, line, quote}. No counter-evidence means not refuted; real but overstated is OVERSTATED, not REFUTED.',
   '- PLAUSIBLE: it could be true but you could not fully confirm it.',
   '- UNVERIFIABLE: it cannot be checked with the access you have.',
   'You see only the claim and its evidence pointers, not the producer\'s reasoning. Check the files yourself with Bash (`grep -n`, `nl -ba FILE | sed -n \'A,Bp\'`). Keep each reason under 300 characters. Read-only: never edit anything.',
-  'For every claim you check, state your own severity rating in severity, by the rubric below, whatever the producer filed.',
+  'For every claim you check, state your own trigger and impact, by the scale below, whatever the producer filed.',
   SEVERITY_RUBRIC,
 ].join('\n')
 
@@ -1057,7 +1089,7 @@ const UNIT_CRITIC_RULES = [
   'You are an outcome critic. You judge whether one unit\'s result covers its brief and its scope; you do not redo the work and you do not verify each finding.',
   '- coverage: your honest estimate (0-1) of the share of the real issues in this scope that the findings below cover.',
   '- gaps: parts of the brief or scope the unit did not cover (a file not read, a part of the brief skipped, a class of issue never looked for). material = true only when a real issue there is likely; add evidence {file, line, quote} when you saw one. At most 6, most important first.',
-  '- overstated: findings (by fid) that are real but filed too high or claimed too broadly, with why. Rate by the rubric below.',
+  '- overstated: findings (by fid) that are real but filed too high or claimed too broadly, with why. Judge by the trigger and impact scale below.',
   'Spot-check with Bash (`grep -n`, `nl -ba FILE | sed -n \'A,Bp\'`); never read whole files. Read-only: never edit anything. Your final answer is the structured output only.',
   SEVERITY_RUBRIC,
 ].join('\n')
@@ -1286,7 +1318,7 @@ function finishUnit(L, u, outcome, reason, res, c, producer, rescue) {
   const grounded = f => (f.evidence || []).some(e => e && keys.has(`${toScope(e.file, u.scope.files)}|${e.quote}`))
   if (res) {
     ;(res.findings || []).forEach((f, i) => { const saved = keys.size > 0 && grounded(f); if (saved) ledger.rescued++; claims.push({
-      cid: `${u.id}.f${i + 1}`, unit: u.id, severity: SEVERITIES.includes(f.severity) ? f.severity : 'medium',
+      cid: `${u.id}.f${i + 1}`, unit: u.id, ...calibrated(f),
       title: f.title, claim: f.claim, evidence: scopeEvidence(f.evidence, u.scope.files),
       // A rescued claim always gets a skeptic (floor V2): its unit failed a capability check, so
       // grounded quotes alone are not enough to call it PLAUSIBLE.
@@ -1312,7 +1344,7 @@ async function unitCritic(u, res) {
   commit(est, 'work', cell)
   const findings = (res.findings || []).map((f, i) => {
     const e = (f.evidence || [])[0] || {}
-    return `f${i + 1} | ${f.severity} | ${f.title} | ${e.file ? `${toScope(e.file, u.scope.files)}:${e.line}` : '(no evidence)'} | ${f.claim}`
+    return `f${i + 1} | ${deriveSeverity(f)} | ${f.title} | ${e.file ? `${toScope(e.file, u.scope.files)}:${e.line}` : '(no evidence)'} | ${f.claim}`
   })
   const prompt = [
     A.shared || '', '', `## Outcome critic for unit ${u.id}: ${u.role}`, UNIT_CRITIC_RULES, '', 'Brief:', u.brief, '',
@@ -1490,7 +1522,7 @@ async function sweep() {
     const fresh = []
     ;((res && res.findings) || []).forEach((f, i) => {
       const c = {
-        cid: `s${r}.f${i + 1}`, unit: 'sweep', severity: SEVERITIES.includes(f.severity) ? f.severity : 'medium', title: f.title,
+        cid: `s${r}.f${i + 1}`, unit: 'sweep', ...calibrated(f), title: f.title,
         claim: f.claim, evidence: scopeEvidence(f.evidence, scopeFiles), parity: false, producer: V.sweepCell, bump: 0,
         blast: Math.max(0, ...V.units.map(u => (u.v ? u.v.B : 0))), verdict: null, reason: null,
       }
@@ -1530,6 +1562,7 @@ async function runBatch(b) {
     const list = b.claims.map(c => [
       `${c.cid} | ${c.severity} | ${c.title}`,
       `  claim: ${c.claim}`,
+      ...(c.trigger ? [`  filed trigger: ${c.trigger}, impact: ${c.impact || '?'}`] : []),
       `  evidence: ${(c.evidence || []).map(e => `${e.file}:${e.line} "${e.quote}"`).join('; ') || '(none)'}`,
       ...(c.criticNote ? [`  note: a reviewer thinks this may be overstated because ${c.criticNote}`] : []),
     ].join('\n')).join('\n')
@@ -1550,10 +1583,12 @@ async function runBatch(b) {
     if (v.counter_quote) c.counter_quote = v.counter_quote.file ? { ...v.counter_quote, file: toScope(v.counter_quote.file, allScopeFiles) } : v.counter_quote
     if (v.support) c.support = v.support.file ? { ...v.support, file: toScope(v.support.file, allScopeFiles) } : v.support
     if (v.support_cmd) c.support_cmd = v.support_cmd
-    // Always stored: the skeptic's own rating (a V4 panel: the highest any lens stated), else the
-    // filed severity. The rung was already chosen from the filed severity.
-    const rated = got.filter(x => x && SEVERITIES.includes(x.severity)).map(x => x.severity)
-    c.verifiedSeverity = rated.length ? rated.reduce((a, s) => (sevRank(s) > sevRank(a) ? s : a)) : c.severity
+    // Always stored: the severity derived from the skeptic's own trigger x impact (a V4 panel: the
+    // highest any lens gave), else the producer's severity. The rung was already chosen from that.
+    const rated = got.filter(x => ratedSeverity(x))
+    const top = rated.length ? rated.reduce((a, x) => (sevRank(ratedSeverity(x)) > sevRank(ratedSeverity(a)) ? x : a)) : null
+    c.verifiedSeverity = top ? ratedSeverity(top) : c.severity
+    if (top && TRIGGERS.includes(top.trigger) && IMPACTS.includes(top.impact)) Object.assign(c, { verifiedTrigger: top.trigger, verifiedImpact: top.impact })
   }
 }
 
@@ -1644,7 +1679,7 @@ const digest = {
   counts: {
     units: ledger.units.length, ok: count('ok'), okRerouted: count('ok-rerouted'), okPromoted: count('ok-promoted'),
     brief: count('brief'), unverified: count('unverified'), claims: claims.length, confirmed: vcount('CONFIRMED'),
-    plausible: vcount('PLAUSIBLE'), refuted: vcount('REFUTED'), unverifiedClaims: vcount('UNVERIFIED'), pending: vcount('PENDING'),
+    plausible: vcount('PLAUSIBLE'), overstated: vcount('OVERSTATED'), refuted: vcount('REFUTED'), unverifiedClaims: vcount('UNVERIFIED'), pending: vcount('PENDING'),
     rescued: claims.filter(c => c.rescued).length,
     critics: ledger.critics.filter(k => !k.skipped).length,
     gapsFound: ledger.units.reduce((t, l) => t + (l.gapsFound || 0), 0), gapReruns: ledger.gapRuns, uncovered: uncovered.length,
@@ -1657,7 +1692,7 @@ const digest = {
   top: [...claims].sort(SEV_ORDER).slice(0, 15).map(c => {
     const e = (c.evidence || [])[0] || {}
     const support = c.support && c.support.file ? `${c.support.file}:${c.support.line}` : c.support_cmd || null
-    return { cid: c.cid, unit: c.unit, severity: c.severity, verifiedSeverity: c.verifiedSeverity || null, title: c.title, verdict: c.verdict, file: e.file || null, line: e.line || null, support }
+    return { cid: c.cid, unit: c.unit, severity: c.severity, verifiedSeverity: c.verifiedSeverity || null, trigger: c.trigger || null, impact: c.impact || null, title: c.title, verdict: c.verdict, file: e.file || null, line: e.line || null, support }
   }),
   money: {
     U: round2(M.U), P: round2(M.P), R: round2(M.R), C: round2(M.C), parityBound: !!(A.caps && A.caps.parityBound),
@@ -1666,7 +1701,7 @@ const digest = {
   },
   warnings, dropped, invariants, critic: critique, uncovered,
 }
-log(`done: ${digest.counts.ok + digest.counts.okRerouted + digest.counts.okPromoted}/${digest.counts.units} units ok, ${ledger.reroutes} re-route(s), ${digest.counts.claims} claim(s): ${digest.counts.confirmed} confirmed / ${digest.counts.refuted} refuted / ${digest.counts.unverifiedClaims} unverified; committed $${digest.money.committedUsd} + reserve used $${digest.money.rerouteUsd}`)
+log(`done: ${digest.counts.ok + digest.counts.okRerouted + digest.counts.okPromoted}/${digest.counts.units} units ok, ${ledger.reroutes} re-route(s), ${digest.counts.claims} claim(s): ${digest.counts.confirmed} confirmed / ${digest.counts.overstated} overstated / ${digest.counts.refuted} refuted / ${digest.counts.unverifiedClaims} unverified; committed $${digest.money.committedUsd} + reserve used $${digest.money.rerouteUsd}`)
 return {
   started: true,
   card,
@@ -1675,7 +1710,8 @@ return {
   results: {
     units: unitResults,
     claims: claims.map(c => ({
-      cid: c.cid, unit: c.unit, severity: c.severity, verifiedSeverity: c.verifiedSeverity || null, title: c.title, claim: c.claim,
+      cid: c.cid, unit: c.unit, severity: c.severity, verifiedSeverity: c.verifiedSeverity || null, filedSeverity: c.filedSeverity || null,
+      trigger: c.trigger || null, impact: c.impact || null, verifiedTrigger: c.verifiedTrigger || null, verifiedImpact: c.verifiedImpact || null, title: c.title, claim: c.claim,
       evidence: c.evidence, rung: c.rung || null, verdict: c.verdict, verdictBy: c.verdictBy || null, reason: c.reason || null,
       counter_quote: c.counter_quote || null, support: c.support || null, support_cmd: c.support_cmd || null, parity: !!c.parity, producer: c.producer || null, bump: c.bump || 0,
       blast: c.blast || 0, floor: Number.isInteger(c.floor) ? c.floor : -1, rescued: c.rescued || null, criticNote: c.criticNote || null, mergedFrom: c.mergedFrom || null, merged: c.merged || null,

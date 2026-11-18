@@ -59,7 +59,7 @@ factors without the current `pm` are ignored with a warning.
 | `remaining` | string[] | with `partial`: what was not reached (→ one slice run) |
 | `files_read` | string[] | required; every file actually opened |
 | `summary` | string ≤300 | required |
-| `findings` | ≤15 × `{title ≤160, severity, claim ≤300, evidence: ≤4 × {file, line ≥1, quote ≤160}}` | required (may be empty); severity ∈ `info low medium high blocker` |
+| `findings` | ≤15 × `{title ≤160, trigger, impact, severity?, claim ≤300, evidence: ≤4 × {file, line ≥1, quote ≤160}}` | required (may be empty); trigger ∈ `normal edge misconfig theoretical`, impact ∈ `customer_money_legal wrong_outcome operational cosmetic`; severity (optional, ∈ `info low medium high blocker`) is stored as `filedSeverity` |
 | `numbers` | `{name, value, method?}[]` | value is a decimal **string** (`"-1234.56"`); compared in integer cents |
 | `confidence` | 0..1 | required; a sort key and one soft trigger, never a re-route on its own |
 | `assumptions` | string[] | required; ≥3 counts as a soft signal |
@@ -73,13 +73,25 @@ a capability failure; <50 % selects `redo` mode.
 
 ## VERDICT: skeptic agent
 
-`{ verdicts: [{cid, verdict, reason ≤300, severity, counter_quote?, support?, support_cmd? ≤200}] }` with
-`verdict ∈ CONFIRMED | REFUTED | PLAUSIBLE | UNVERIFIABLE`. A REFUTED verdict without a
-`counter_quote {file, line, quote}` is kept as PLAUSIBLE; a CONFIRMED verdict without the
+`{ verdicts: [{cid, verdict, reason ≤300, trigger, impact, counter_quote?, support?, support_cmd? ≤200}] }` with
+`verdict ∈ CONFIRMED | OVERSTATED | REFUTED | PLAUSIBLE | UNVERIFIABLE`. OVERSTATED (0.1.7) =
+real, but the trigger, scope or impact is overstated: it needs support and a corrected
+trigger/impact (else PLAUSIBLE) and counts as a real finding (`digest.counts.overstated`).
+REFUTED is reserved for claims the evidence shows false: a REFUTED verdict without a
+`counter_quote {file, line, quote}` is kept as PLAUSIBLE; a CONFIRMED or OVERSTATED verdict without the
 skeptic's own `support {file, line, quote}` (a verbatim quote it found) or, for an absence
 claim, `support_cmd` (the exact search that came back empty) is kept as PLAUSIBLE;
-UNVERIFIABLE becomes UNVERIFIED. `severity` is **required** (since 0.1.5): the skeptic's
-own rating by the shared rubric, stored as the claim's `verifiedSeverity`.
+UNVERIFIABLE becomes UNVERIFIED. `trigger` and `impact` are **required** (since 0.1.7): the
+skeptic's own pair; the severity derived from it is stored as the claim's `verifiedSeverity`.
+
+### Calibrated severity (`SEVERITY_MATRIX`)
+
+| impact \ trigger | normal | edge | misconfig | theoretical |
+|---|---|---|---|---|
+| customer_money_legal | blocker | high | medium | low |
+| wrong_outcome | high | medium | low | low |
+| operational | medium | low | low | info |
+| cosmetic | low | info | info | info |
 
 ## CRITIC: deep runs only
 
@@ -87,18 +99,19 @@ own rating by the shared rubric, stored as the claim's `verifiedSeverity`.
 
 ## Claim (in `results.claims`)
 
-`{cid, unit, severity, verifiedSeverity, title, claim, evidence, rung, verdict, verdictBy,
+`{cid, unit, severity, verifiedSeverity, filedSeverity, trigger, impact, verifiedTrigger, verifiedImpact, title, claim, evidence, rung, verdict, verdictBy,
 reason, counter_quote, support, support_cmd, parity, producer:{model, effort}, bump, blast, floor, mergedFrom}`.
 Evidence, `counter_quote` and `support` paths are canonicalized to the Scope spelling.
 `node scripts/report.mjs <output.json>` prints them sorted by severity.
-`verifiedSeverity` is always set on a verified claim: the skeptic's own rating (required in
-VERDICT; a V4 panel keeps the highest any lens stated), else the filed severity. The rung is
-chosen from the filed `severity`; `digest.top` ordering and `digest.counts.bySeverity` use
-`verifiedSeverity ?? severity`. Producers and skeptics rate by one rubric (`SEVERITY_RUBRIC`
-in fanout.js): rate by what the code does today; most findings are medium or low.
+`severity` is derived by the foreman from the producer's `trigger` × `impact` (a finding
+without a valid pair keeps its filed severity, else medium). `verifiedSeverity` is always set
+on a verified claim: derived from the skeptic's own pair (a V4 panel keeps the highest any
+lens gave), else `severity`. The rung is chosen from the derived `severity`; `digest.top`
+ordering and `digest.counts.bySeverity` use `verifiedSeverity ?? severity`. Producers and
+skeptics share one trigger and impact scale (`SEVERITY_RUBRIC` in fanout.js).
 `floor` is the unit's own rung floor from a `V2`/`V3`/`V4` token in its `check` (-1 if
 none); when merging duplicate claims the kept floor is the highest of the merged set.
-`verdict ∈ CONFIRMED | PLAUSIBLE | REFUTED | UNVERIFIED | PENDING` (PENDING only after a
+`verdict ∈ CONFIRMED | OVERSTATED | PLAUSIBLE | REFUTED | UNVERIFIED | PENDING` (PENDING only after a
 deep `stage:'work'`). Pass these back unchanged as `claims` for `stage:'verify'`.
 
 ## Implement mode (inline script)

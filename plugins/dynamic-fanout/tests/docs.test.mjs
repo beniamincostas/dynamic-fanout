@@ -85,11 +85,15 @@ test('0.1.5 defaults: findings cap, inspector quotes, mediumsPerUnit and VERDICT
   const mpu = FANOUT.match(/\n  mediumsPerUnit: (\d+)/)[1];
   assert.match(read(REFS, 'economics.md'), new RegExp('`mediumsPerUnit: ' + mpu + '`'));
   assert.match(read(REFS, 'economics.md'), new RegExp('mediumsPerUnit: ' + mpu + '\\n'));
-  assert.match(read(REFS, 'schemas.md'), /reason ≤300, severity, counter_quote\?/);
-  const line = 'Rate by what the code does today, not the worst imaginable case; most findings are medium or low.';
+  assert.match(read(REFS, 'schemas.md'), /reason ≤300, trigger, impact, counter_quote\?/);
+  const line = 'Rate by what the code does today, not the worst imaginable case.';
   assert.ok(FANOUT.includes(line));
   for (const f of ['worker', 'worker-ctx', 'worker-mcp', 'skeptic']) {
-    assert.ok(read(PLUGIN, 'agents', `${f}.md`).includes(line), `${f}.md carries the severity rubric`);
+    const body = read(PLUGIN, 'agents', `${f}.md`);
+    assert.ok(body.includes(line), `${f}.md carries the trigger/impact scale`);
+    assert.match(body, /^- `trigger`: `normal` = .*`theoretical` = /m, `${f}.md explains trigger in one line`);
+    assert.match(body, /^- `impact`: `customer_money_legal` = .*`cosmetic` = /m, `${f}.md explains impact in one line`);
+    assert.doesNotMatch(body, /`blocker` — /, `${f}.md has no free severity rubric`);
   }
 });
 
@@ -117,7 +121,8 @@ test('0.1.5 docs: master overhead line, recall rule, lenses, waiver, wrapper pat
     const t = read(REFS, 'playbooks', f);
     assert.match(t, /lenses: 2/, f);
     assert.match(t, /[Rr]ecall rule/, f);
-    assert.match(t, /most findings are medium or low/, f);
+    assert.match(t, /`trigger` \(normal \| edge \| misconfig \| theoretical\)/, f);
+    assert.match(t, /OVERSTATED, not\s+REFUTED/, f);
   }
   const impl = read(REFS, 'playbooks', 'implement.md');
   assert.match(impl, /`implement`[^\n]*2\.0/);
@@ -132,4 +137,17 @@ test('SKILL.md names every playbook, so a new one is reachable', () => {
     }
   }
   assert.match(SKILL, /not checked out at the session cwd/);
+});
+
+test('0.1.7: schemas.md states SEVERITY_MATRIX and the OVERSTATED verdict as the code does', () => {
+  const schemas = read(REFS, 'schemas.md');
+  const block = FANOUT.match(/const SEVERITY_MATRIX = \{\n([\s\S]*?)\n\}/)[1];
+  const rows = [...block.matchAll(/^\s+(\w+): \{ normal: '(\w+)', edge: '(\w+)', misconfig: '(\w+)', theoretical: '(\w+)' \},?$/gm)];
+  assert.equal(rows.length, 4);
+  for (const [, impact, ...sevs] of rows) assert.ok(schemas.includes(`| ${impact} | ${sevs.join(' | ')} |`), `schemas.md row for ${impact}`);
+  const verdicts = FANOUT.match(/const VERDICTS = \[([^\]]+)\]/)[1].replace(/'/g, '').split(', ');
+  assert.ok(schemas.includes(`verdict ∈ ${verdicts.join(' | ')}`), 'schemas.md lists the VERDICT enum');
+  const skeptic = read(PLUGIN, 'agents', 'skeptic.md');
+  assert.match(skeptic, /^\| OVERSTATED \| /m);
+  assert.match(SKILL, /OVERSTATED/);
 });
