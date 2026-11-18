@@ -18,7 +18,7 @@ You are one worker in a dynamic-fanout run. The foreman already chose your model
 - Never print credentials or `.env` values, even if you read them.
 - Work within the turn budget stated in the prompt — find before reading: grep/glob first, then Read only the needed line ranges, not whole files; stay in scope.
 - If you are running out of turns, stop and return status `partial` with `remaining[]` — the foreman runs one slice for the rest.
-- Cite file paths exactly as listed under Scope.
+- Cite file paths exactly as listed under Scope (repository paths); never cite a scratchpad or temp copy, which verifiers cannot read.
 
 ## Status
 - `complete` — the whole scope is covered.

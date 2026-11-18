@@ -85,7 +85,7 @@ const DEFAULT_CALIB = {
   readFactor: 1,
   ultraReadFactor: 4,
   ultraTurnCap: 80,
-  caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 12, inspector: 6 },
+  caps: { worker: 30, workerMcp: 35, workerCtx: 30, implementer: 60, skeptic: 20, inspector: 6 },
   inspectorIn: 12000,
   // Skeptics reading through Bash read 4-10k tokens; the gap sweep re-reads a slice of scope.
   verifierInFrac: 0.25,
@@ -257,21 +257,32 @@ function agentOpts(key, K, role) {
 }
 
 // topK and batch size of the verification stage (shared by price() and verify()).
-function verifySizing(vcfg, depth) {
+// 0.1.7: a fixed topK cut 12-46 claims per run. Unless the master sets verify.topK, it is
+// max(DEFAULT_TOPK[depth], ceil(half the V2+ claims)); quality 'max' verifies them all.
+// The money rails still gate every launch. price() passes no claim count (none exist yet).
+const MAX_STRONG_BATCH = 2
+function verifySizing(vcfg, depth, eligible, quality) {
   vcfg = vcfg || {}
-  const topK = Number.isInteger(vcfg.topK) ? vcfg.topK : DEFAULT_TOPK[depth]
+  const topK = Number.isInteger(vcfg.topK) ? vcfg.topK
+    : quality === 'max' ? Infinity
+      : Math.max(DEFAULT_TOPK[depth], Math.ceil(0.5 * (Number(eligible) || 0)))
   const batch = Number.isInteger(vcfg.batch) && vcfg.batch > 0 ? vcfg.batch : depth === 'quick' ? 5 : 3
   return { topK, batch }
 }
+
+// 0.1.7: a V3/V4 skeptic reads deeper per claim; 35% hit the turn cap at batch 3, so its
+// batches hold at most MAX_STRONG_BATCH claims. V2 keeps the configured batch.
+const batchFor = (rung, batch) => (rung === 'V3' || rung === 'V4' ? Math.min(batch, MAX_STRONG_BATCH) : batch)
 
 // Verifier batches to reserve when the master gives no verify.expected: every expected
 // high gets checked (highs are exempt from topK); mediums only when their rung is V2+,
 // and then at most topK of them.
 function expectedVerifiers(nUnits, depth, vcfg, rungs, K) {
   const { topK, batch } = verifySizing(vcfg, depth)
-  const highs = Math.ceil((nUnits * K.highsPerUnit) / batch)
+  const highRung = (rungs && rungs.high) || DEFAULT_RUNGS.high
+  const highs = Math.ceil((nUnits * K.highsPerUnit) / batchFor(highRung, batch))
   const medRung = (rungs && rungs.medium) || DEFAULT_RUNGS.medium
-  const mediums = ['V2', 'V3', 'V4'].includes(medRung) ? Math.ceil(Math.min(nUnits * K.mediumsPerUnit, topK || 0) / batch) : 0
+  const mediums = ['V2', 'V3', 'V4'].includes(medRung) ? Math.ceil(Math.min(nUnits * K.mediumsPerUnit, topK || 0) / batchFor(medRung, batch)) : 0
   return highs + mediums
 }
 
@@ -1057,6 +1068,7 @@ const RULES = [
   '- If you cannot finish, set status "partial" and list what is left in remaining. If the brief is unclear, you lack access, or the work is outside the scope, set status "blocked" with blocked_reason ambiguous_brief | no_access | out_of_scope instead of guessing. Use too_hard or contradictory_evidence when that is the honest reason.',
   '- confidence is your honest probability (0-1) that the findings are correct and complete. Being unsure is fine; overclaiming is not.',
   '- Compact output: at most 15 findings, summary at most 300 characters. Your final answer is the structured output only.',
+  '- Cite paths as listed under Scope (repository paths); never cite a scratchpad or temp copy, which verifiers cannot read.',
   SEVERITY_RUBRIC,
 ].join('\n')
 
@@ -1172,7 +1184,7 @@ const money = {
 const out0 = budget.spent()
 const maxOut = A.caps && Number(A.caps.maxOutputTokens) > 0 ? Number(A.caps.maxOutputTokens) : Math.round(1.5 * M.plannedOut)
 const b2Pending = new Set(V.units.filter(u => u.fbCell && u.v && u.v.B === 2).map(u => u.id))
-const ledger = { units: [], verifiers: [], inspectors: [], sweeps: [], critics: [], cells: {}, reroutes: 0, gapRuns: 0, promotions: [], rescued: 0 }
+const ledger = { units: [], verifiers: [], inspectors: [], sweeps: [], critics: [], cells: {}, reroutes: 0, gapRuns: 0, verifierRetries: 0, promotions: [], rescued: 0 }
 // Gaps a critic named that no gap re-run covered (already re-routed, reserve refused, run failed).
 const uncovered = []
 const unitResults = {}
@@ -1553,6 +1565,7 @@ async function runBatch(b) {
     ? ['Lens: correctness and reachability. Can this actually happen on a real path, with real inputs?', 'Lens: counter-evidence. Look for code, config, tests or data that make the claim false.']
     : [null]
   const verdictSets = []
+  let infraFailed = 0
   for (let i = 0; i < lenses.length; i++) {
     const est = estUsd(b.cell, inAvg * K.verifierInFrac, 0, K, agentOpts('skeptic', K))
     const why = blocked(est, 'verify')
@@ -1567,14 +1580,31 @@ async function runBatch(b) {
       ...(c.criticNote ? [`  note: a reviewer thinks this may be overstated because ${c.criticNote}`] : []),
     ].join('\n')).join('\n')
     const prompt = [A.shared || '', '', SKEPTIC_RULES, lenses[i] ? `\n${lenses[i]}` : '', '', 'Claims:', list, '', tag].join('\n')
-    const r = await callOnce(prompt, b.cell, { label: `verify:${b.id}·${b.rung}·${cellKey(b.cell)}`, phase: 'Verify', schema: VERDICT, agentType: AT.skeptic })
+    const o = { label: `verify:${b.id}·${b.rung}·${cellKey(b.cell)}`, phase: 'Verify', schema: VERDICT, agentType: AT.skeptic }
+    let r = await call(prompt, b.cell, o)
+    if (r) typeOk.add(AT.skeptic)
     ledger.verifiers.push({ tag, cell: cellKey(b.cell), rung: b.rung, claims: b.claims.map(c => c.cid), estUsd: est })
+    // 0.1.7: an outage once killed every verifier batch of a run. A null answer retries once on
+    // the same cell (the plugin type only if it has worked in this run); never a third call.
+    if (!r) {
+      const why2 = blocked(est, 'verify')
+      if (why2) dropped.push({ what: `verification ${b.id} retry`, count: b.claims.length, reason: why2 })
+      else {
+        commit(est, 'verify', b.cell)
+        ledger.verifierRetries++
+        r = await call(prompt, b.cell, typeOk.has(AT.skeptic) ? o : { ...o, agentType: undefined })
+        if (r) typeOk.add(AT.skeptic)
+        ledger.verifiers.push({ tag, cell: cellKey(b.cell), rung: b.rung, claims: b.claims.map(c => c.cid), estUsd: est, retry: true })
+      }
+      if (!r) infraFailed++
+    }
     verdictSets.push(r ? new Map((r.verdicts || []).map(v => [v.cid, normalizeVerdict(v)])) : null)
   }
   for (const c of b.claims) {
     const got = verdictSets.map(m => (m ? m.get(c.cid) || null : null))
     if (got.every(v => !v)) {
-      const reason = verdictSets.every(m => m === null) ? 'verifier refused or failed (see dropped)' : 'no verdict returned'
+      const reason = !verdictSets.every(m => m === null) ? 'no verdict returned'
+        : infraFailed === lenses.length ? 'verifier failed twice (infra)' : 'verifier refused or failed (see dropped)'
       Object.assign(c, { verdict: 'UNVERIFIED', verdictBy: b.id, reason })
       continue
     }
@@ -1593,7 +1623,6 @@ async function runBatch(b) {
 }
 
 async function verify(all) {
-  const { topK, batch: batchSize } = verifySizing(A.verify, A.depth)
   const pending = []
   for (const c of all) {
     if (c.verdict) continue
@@ -1605,6 +1634,7 @@ async function verify(all) {
   pending.sort((x, y) => sevRank(y.severity) - sevRank(x.severity) || (y.blast || 0) - (x.blast || 0) || String(x.cid).localeCompare(String(y.cid)))
   // Parity claims carry the >= ultracode guarantee and blocker/high claims sit at V3 by
   // severity: topK never drops either; it only bounds the remaining V2+ claims.
+  const { topK, batch: batchSize } = verifySizing(A.verify, A.depth, pending.length, A.quality)
   const exempt = pending.filter(c => topKExempt(c, V.rungs))
   const rest = pending.filter(c => !topKExempt(c, V.rungs))
   const chosen = [...exempt, ...rest.slice(0, topK)]
@@ -1621,7 +1651,8 @@ async function verify(all) {
   const batches = []
   let n = 0
   for (const g of groups.values()) {
-    for (let i = 0; i < g.claims.length; i += batchSize) batches.push({ id: `b${++n}`, rung: g.rung, cell: g.cell, claims: g.claims.slice(i, i + batchSize) })
+    const size = batchFor(g.rung, batchSize)
+    for (let i = 0; i < g.claims.length; i += size) batches.push({ id: `b${++n}`, rung: g.rung, cell: g.cell, claims: g.claims.slice(i, i + size) })
   }
   if (batches.length) await parallel(batches.map(b => () => runBatch(b)))
 }
